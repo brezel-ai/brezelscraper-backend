@@ -19,72 +19,75 @@ func TestSanitizeSeedError(t *testing.T) {
 		// nil
 		{"nil error → empty", nil, ""},
 
-		// Recognized Chromium net:: codes
+		// Recognized Chromium net:: codes. Strings are capitalized + have
+		// no "Scraping aborted:" prefix — the frontend already renders
+		// "Job failed. Reason: <message>", so a prefix here produces
+		// the redundant "Reason: Scraping aborted: ...".
 		{
 			name: "ERR_PROXY_CONNECTION_FAILED",
 			in:   errors.New("Frame.Goto https://www.google.com/maps/search/x?hl=en: playwright: net::ERR_PROXY_CONNECTION_FAILED at https://www.google.com/maps/search/x?hl=en"),
-			want: "Scraping aborted: proxy connection failed",
+			want: "Proxy connection failed",
 		},
 		{
 			name: "ERR_TUNNEL_CONNECTION_FAILED",
 			in:   errors.New("playwright: net::ERR_TUNNEL_CONNECTION_FAILED at https://x"),
-			want: "Scraping aborted: proxy tunnel failed",
+			want: "Proxy tunnel failed",
 		},
 		{
 			name: "ERR_NAME_NOT_RESOLVED",
 			in:   errors.New("playwright: net::ERR_NAME_NOT_RESOLVED at https://x"),
-			want: "Scraping aborted: DNS resolution failed",
+			want: "DNS resolution failed",
 		},
 		{
 			name: "ERR_CONNECTION_REFUSED",
 			in:   errors.New("playwright: net::ERR_CONNECTION_REFUSED at https://x"),
-			want: "Scraping aborted: target connection refused",
+			want: "Target connection refused",
 		},
 		{
 			name: "ERR_CONNECTION_RESET",
 			in:   errors.New("playwright: net::ERR_CONNECTION_RESET at https://x"),
-			want: "Scraping aborted: target connection reset",
+			want: "Target connection reset",
 		},
 		{
 			name: "ERR_CONNECTION_TIMED_OUT",
 			in:   errors.New("playwright: net::ERR_CONNECTION_TIMED_OUT at https://x"),
-			want: "Scraping aborted: connection timed out",
+			want: "Connection timed out",
 		},
 		{
 			name: "ERR_TIMED_OUT (alias)",
 			in:   errors.New("playwright: net::ERR_TIMED_OUT at https://x"),
-			want: "Scraping aborted: connection timed out",
+			want: "Connection timed out",
 		},
 		{
 			name: "ERR_INTERNET_DISCONNECTED",
 			in:   errors.New("playwright: net::ERR_INTERNET_DISCONNECTED at https://x"),
-			want: "Scraping aborted: network unavailable",
+			want: "Network unavailable",
 		},
 		{
 			name: "ERR_CERT_AUTHORITY_INVALID",
 			in:   errors.New("playwright: net::ERR_CERT_AUTHORITY_INVALID at https://x"),
-			want: "Scraping aborted: TLS/certificate error",
+			want: "TLS/certificate error",
 		},
 
 		// Unknown net:: code → token extracted
 		{
 			name: "unknown net:: token extracted",
 			in:   errors.New("playwright: net::ERR_HTTP2_PROTOCOL_ERROR at https://x"),
-			want: "Scraping aborted: network error (ERR_HTTP2_PROTOCOL_ERROR)",
+			want: "Network error (ERR_HTTP2_PROTOCOL_ERROR)",
 		},
 
 		// Playwright nav with no net:: code
 		{
 			name: "Frame.Goto without net:: code",
 			in:   errors.New("Frame.Goto https://x: page closed"),
-			want: "Scraping aborted: page failed to load",
+			want: "Page failed to load",
 		},
 
 		// Generic fallback — never leak raw err.Error()
 		{
 			name: "unknown error → generic fallback",
 			in:   errors.New("something completely unexpected with proxy details: socks5://user:pw@host:1234"),
-			want: "Scraping aborted: scrape engine error",
+			want: "Scrape engine error",
 		},
 	}
 	for _, tc := range tests {

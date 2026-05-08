@@ -14,14 +14,19 @@ import (
 //
 // The sanitization rules favour:
 //   - SHORT (one line, no stack traces, no full URLs)
-//   - DOMAIN-RECOGNIZABLE (mention "proxy", "DNS", "timeout" rather than
+//   - DOMAIN-RECOGNIZABLE (mention "Proxy", "DNS", "timeout" rather than
 //     leaking internal library names like "playwright" or "Frame.Goto")
 //   - DETERMINISTIC (a given error class always maps to the same string —
 //     so log aggregators and support runbooks can match)
 //
-// Unrecognized errors fall through to a generic "Scraping aborted: scrape
-// engine error" — never the raw err.Error() (which can leak proxy URLs,
-// internal hostnames, or stack-trace fragments).
+// Strings start with a capital letter and have no leading prefix because
+// the frontend already renders them as `Job failed. Reason: <message>`;
+// adding a "Scraping aborted:" prefix here would produce the redundant
+// "Reason: Scraping aborted: proxy connection failed".
+//
+// Unrecognized errors fall through to a generic "Scrape engine error" —
+// never the raw err.Error() (which can leak proxy URLs, internal
+// hostnames, or stack-trace fragments).
 func sanitizeSeedError(err error) string {
 	if err == nil {
 		return ""
@@ -29,22 +34,22 @@ func sanitizeSeedError(err error) string {
 	s := err.Error()
 	switch {
 	case strings.Contains(s, "ERR_PROXY_CONNECTION_FAILED"):
-		return "Scraping aborted: proxy connection failed"
+		return "Proxy connection failed"
 	case strings.Contains(s, "ERR_TUNNEL_CONNECTION_FAILED"):
-		return "Scraping aborted: proxy tunnel failed"
+		return "Proxy tunnel failed"
 	case strings.Contains(s, "ERR_NAME_NOT_RESOLVED"):
-		return "Scraping aborted: DNS resolution failed"
+		return "DNS resolution failed"
 	case strings.Contains(s, "ERR_CONNECTION_REFUSED"):
-		return "Scraping aborted: target connection refused"
+		return "Target connection refused"
 	case strings.Contains(s, "ERR_CONNECTION_RESET"):
-		return "Scraping aborted: target connection reset"
+		return "Target connection reset"
 	case strings.Contains(s, "ERR_CONNECTION_TIMED_OUT"),
 		strings.Contains(s, "ERR_TIMED_OUT"):
-		return "Scraping aborted: connection timed out"
+		return "Connection timed out"
 	case strings.Contains(s, "ERR_INTERNET_DISCONNECTED"):
-		return "Scraping aborted: network unavailable"
+		return "Network unavailable"
 	case strings.Contains(s, "ERR_CERT_"):
-		return "Scraping aborted: TLS/certificate error"
+		return "TLS/certificate error"
 	case strings.Contains(s, "playwright: net::"):
 		// Other Chromium net:: codes — extract the ERR_* token without
 		// leaking surrounding URL/path detail.
@@ -61,16 +66,16 @@ func sanitizeSeedError(err error) string {
 			}
 			tok := tail[:end]
 			if tok != "" {
-				return fmt.Sprintf("Scraping aborted: network error (%s)", tok)
+				return fmt.Sprintf("Network error (%s)", tok)
 			}
 		}
-		return "Scraping aborted: network error"
+		return "Network error"
 	case strings.Contains(s, "Frame.Goto"),
 		strings.Contains(s, "page.goto"):
 		// Generic playwright navigation failure with no recognizable net::
 		// code (e.g. browser context closed, page crashed mid-navigation).
-		return "Scraping aborted: page failed to load"
+		return "Page failed to load"
 	default:
-		return "Scraping aborted: scrape engine error"
+		return "Scrape engine error"
 	}
 }
