@@ -17,8 +17,8 @@ import (
 	"github.com/gosom/scrapemate"
 )
 
-// nulEscape is the 6-character JSON escape that json.Marshal produces for
-// a NUL byte (0x00). Valid per the JSON spec, but rejected by Postgres'
+// nulEscape is the 6-byte JSON escape sequence that json.Marshal produces
+// for a NUL byte (0x00). Valid per the JSON spec, but rejected by Postgres'
 // json/jsonb type with SQLSTATE 22P02 ("invalid input syntax for type
 // json"). Google Maps scraped strings (review text, image alt text)
 // sometimes contain NUL bytes; without stripping, the whole row fails to
@@ -26,7 +26,7 @@ import (
 var nulEscape = []byte{'\\', 'u', '0', '0', '0', '0'}
 
 // mustMarshalJSON marshals v to JSON, logging a warning and returning
-// "null" on error. Strips the JSON-escaped NUL sequence from the output so
+// "null" on error. Strips JSON-escaped NUL sequences from the output so
 // the result is safe to insert into a Postgres json/jsonb column.
 func mustMarshalJSON(v any) []byte {
 	b, err := json.Marshal(v)
@@ -34,10 +34,66 @@ func mustMarshalJSON(v any) []byte {
 		slog.Warn("json_marshal_failed", slog.String("type", fmt.Sprintf("%T", v)), slog.Any("error", err))
 		return []byte("null")
 	}
-	if bytes.Contains(b, nulEscape) {
-		b = bytes.ReplaceAll(b, nulEscape, nil)
+	return stripJSONNulEscape(b)
+}
+
+// stripJSONNulEscape removes the 6-byte sequence \\u0000 from JSON output,
+// but ONLY where it is a genuine NUL escape — i.e., where the preceding
+// run of backslashes has even length.
+//
+// Why: a scraped string can itself contain the literal six ASCII characters
+// \, u, 0, 0, 0, 0 (e.g., URL tokens, JS-encoded text from the page). For
+// such input json.Marshal correctly emits "\\u0000" (8 bytes inside the
+// quotes: \, \, u, 0, 0, 0, 0). The previous implementation used
+// bytes.ReplaceAll, which is escape-blind: it matched the inner 6 bytes
+// and stripped them, leaving a stray backslash that Postgres rejects with
+// `Token "\" is invalid` (SQLSTATE 22P02) — re-creating the very symptom
+// PR #60 was meant to fix, just for a different class of input. Confirmed
+// in prod 2026-05-10 against Decodo-fetched results.
+//
+// This routine walks the bytes once, counting backslash runs:
+//   - even run of backslashes followed by anything: literal backslashes,
+//     copy through unchanged
+//   - odd run: the last backslash starts an escape — if it's \\u0000, drop
+//     the whole 6-byte sequence; otherwise preserve it
+func stripJSONNulEscape(b []byte) []byte {
+	// Fast path: no \\u0000 anywhere → no allocation.
+	if !bytes.Contains(b, nulEscape) {
+		return b
 	}
-	return b
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		if b[i] != '\\' {
+			out = append(out, b[i])
+			i++
+			continue
+		}
+		// Measure the run of consecutive backslashes starting at i.
+		j := i
+		for j < len(b) && b[j] == '\\' {
+			j++
+		}
+		run := j - i
+		if run%2 == 0 {
+			// All backslashes are paired (literal `\\` escapes). Copy as-is.
+			out = append(out, b[i:j]...)
+			i = j
+			continue
+		}
+		// Odd run: copy paired prefix, the last `\` starts an escape.
+		out = append(out, b[i:j-1]...)
+		// Is the next 5 bytes `u0000`? If so, drop the whole \\u0000.
+		if j+4 < len(b) &&
+			b[j] == 'u' && b[j+1] == '0' && b[j+2] == '0' && b[j+3] == '0' && b[j+4] == '0' {
+			i = j + 5
+			continue
+		}
+		// Some other valid escape (\", \\, \n, \uXXXX where XXXX != 0000,
+		// etc.). Preserve the trailing backslash and continue.
+		out = append(out, '\\')
+		i = j
+	}
+	return out
 }
 
 // SynchronizedDualWriter writes to both PostgreSQL and CSV in a synchronized way
