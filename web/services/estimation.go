@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -140,7 +141,7 @@ func NewEstimationService(db *sql.DB, priceRepo models.PricingRuleRepository, lo
 // defaults on DB error — that "fail-open on a money path" pattern meant
 // estimates and end-of-job charges could quote different prices to the
 // same user during a pricing_rules outage.
-var ErrPricingUnavailable = fmt.Errorf("pricing rules unavailable")
+var ErrPricingUnavailable = errors.New("pricing rules unavailable")
 
 // getPriceMicro returns the price for an event type in micro-credits.
 // On a clean cold-start path s.priceRepo is nil (used by unit tests),
@@ -197,13 +198,18 @@ func (s *EstimationService) loadPrices(ctx context.Context) (map[string]int64, e
 	prices, err := s.priceRepo.GetActiveDefaultPrices(ctx)
 	if err != nil {
 		// Real DB error: surface it. Do NOT cache — next call retries.
-		s.log.Error("pricing_rules_load_failed", slog.Any("error", err))
-		return nil, fmt.Errorf("%w: %v", ErrPricingUnavailable, err)
+		// %w + %w (Go ≥ 1.20) preserves both the sentinel for errors.Is
+		// matching at the HTTP layer AND the inner driver error for
+		// errors.As (pgconn.PgError, etc.) at the log site, without
+		// duplicating the Error here. The duplicate-log to the handler
+		// is intentional: this layer carries the raw cause; the handler
+		// adds user/path context.
+		return nil, fmt.Errorf("%w: %w", ErrPricingUnavailable, err)
 	}
 	if len(prices) == 0 {
 		// Empty table is a deployment / migration error, not a
 		// transient failure. Same treatment: surface, do not cache.
-		s.log.Error("pricing_rules_empty")
+		// No inner cause to wrap — the sentinel itself is the message.
 		return nil, ErrPricingUnavailable
 	}
 
@@ -471,10 +477,20 @@ func (s *EstimationService) CheckSufficientBalance(ctx context.Context, userID s
 	const query = `SELECT COALESCE(credit_balance, 0)::text, COALESCE(credit_held_precise, 0)::text FROM users WHERE id = $1`
 	err := s.db.QueryRowContext(ctx, query, userID).Scan(&balanceStr, &heldStr)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("user not found")
+		if errors.Is(err, sql.ErrNoRows) {
+			// Mirror CreateJobWithLimit's behaviour: an unprovisioned
+			// user has zero balance, zero held. The downstream
+			// affordability check will then translate that into the
+			// same 402 a real-but-broke user gets, with the same
+			// error message. Pre-fix this branch returned "user not
+			// found" verbatim, which leaked an internal concept to
+			// the client and confused support — users whose Clerk
+			// row hadn't replicated yet appeared to "not exist".
+			balanceStr = "0"
+			heldStr = "0"
+		} else {
+			return fmt.Errorf("failed to retrieve credit balance: %w", err)
 		}
-		return fmt.Errorf("failed to retrieve credit balance: %w", err)
 	}
 
 	balanceDec, err := decimal.NewFromString(balanceStr)
@@ -490,18 +506,25 @@ func (s *EstimationService) CheckSufficientBalance(ctx context.Context, userID s
 
 	if availableMicro < estimate.TotalMicro() {
 		availableFloat, _ := availableDec.Float64()
-		s.log.Warn("insufficient_credits",
+		// Info, not Warn: a user with insufficient balance is a normal
+		// state (free-tier user submitting a too-big job), not a system
+		// problem. Warn-level routes to paging in our alerting setup.
+		s.log.Info("insufficient_credits",
 			slog.String("user_id", userID),
 			slog.Float64("available", availableFloat),
 			slog.Float64("required", estimate.Total),
 			slog.Int("places", estimate.Places),
 		)
-		return fmt.Errorf(
-			"insufficient credits: you have %.4f credits available but this job requires %.4f credits to start (estimated cost for %d places). Please purchase more credits to continue",
-			availableFloat,
-			estimate.Total,
-			estimate.Places,
-		)
+		// Same typed error shape the transactional gate returns
+		// (concurrent_limit.go ErrInsufficientBalance). One sentinel
+		// for both code paths means handlers errors.As once and render
+		// the user message via UserMessage(). Error() is a stable
+		// low-cardinality string for log grouping.
+		return ErrInsufficientBalance{
+			Balance:        availableFloat,
+			RequiredCost:   estimate.Total,
+			EstimatedCount: estimate.Places,
+		}
 	}
 
 	return nil

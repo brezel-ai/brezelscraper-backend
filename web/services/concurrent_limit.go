@@ -25,17 +25,42 @@ func (e ErrConcurrentJobLimitReached) Error() string {
 	return fmt.Sprintf("concurrent job limit reached (limit: %d)", e.Limit)
 }
 
-// ErrInsufficientBalance is returned when a user's credit balance is too low
-// to cover the estimated job cost. Callers should convert this to HTTP 402.
+// ErrInsufficientBalance is returned when a user's available credit balance
+// (credit_balance − credit_held_precise) is too low to cover the estimated
+// job cost. Callers should convert this to HTTP 402.
+//
+// Error() returns a low-cardinality string ("insufficient available
+// balance") so log aggregators (Loki, Datadog) can group these
+// occurrences together regardless of the specific numbers. The
+// user-facing message is rendered at the HTTP handler from the typed
+// fields below; that's the single place that knows about i18n,
+// formatting tone, and the "Please purchase more" call to action.
+//
+// Field names are kept (Balance / RequiredCost / EstimatedCount) for
+// backwards-compat with any caller that already uses errors.As to read
+// them. Balance now carries AVAILABLE balance (i.e. balance minus
+// holds) — the figure the user can act on, not the gross wallet.
 type ErrInsufficientBalance struct {
 	Balance        float64
 	RequiredCost   float64
 	EstimatedCount int
 }
 
+// insufficientBalanceMessage is the stable low-cardinality string used for
+// log grouping. Exported as a const so the HTTP handler and tests can
+// detect it without depending on the formatting of UserMessage.
+const insufficientBalanceMessage = "insufficient available balance"
+
 func (e ErrInsufficientBalance) Error() string {
+	return insufficientBalanceMessage
+}
+
+// UserMessage renders the human-readable message for the 402 response
+// body. Constructed from the typed fields so the wire string can change
+// (i18n, tone) without affecting log grouping on Error().
+func (e ErrInsufficientBalance) UserMessage() string {
 	return fmt.Sprintf(
-		"insufficient credits: you have %.4f credits but this job requires a minimum of %.4f credits to start (estimated cost for %d places). Please purchase more credits to continue",
+		"Insufficient credits: %.4f available, this job requires %.4f credits (estimated for %d places). Please purchase more credits to continue.",
 		e.Balance, e.RequiredCost, e.EstimatedCount,
 	)
 }

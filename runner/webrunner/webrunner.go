@@ -120,6 +120,7 @@ type webrunner struct {
 	appCfg              *pkgconfig.Config
 	db                  *sql.DB
 	billingSvc          *billing.Service
+	concurrentLimitSvc  *webservices.ConcurrentLimitService
 	proxyURLs           []string     // upstream proxy URLs with creds; round-robin via proxyIndex
 	proxyIndex          atomic.Int64 // round-robin counter, increments per job
 	s3Uploader          *s3uploader.Uploader
@@ -403,6 +404,7 @@ func New(cfg *runner.Config, appCfg *pkgconfig.Config, logger *slog.Logger) (run
 		appCfg:              appCfg,
 		db:                  db,
 		billingSvc:          billSvc,
+		concurrentLimitSvc:  webservices.NewConcurrentLimitService(db),
 		proxyURLs:           cfg.Proxy.Proxies,
 		s3Uploader:          s3Upload,
 		s3Bucket:            s3BucketName,
@@ -690,9 +692,11 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 	// must be released exactly once per job to keep credit_held_precise
 	// in sync with the user's actually-in-flight estimates.
 	//
-	// Order matters with the status-persist defer below: defers run LIFO,
-	// so this defer fires AFTER status is persisted. That way the
-	// `job_billing_summary` log carries the final terminal status.
+	// Defer ordering: this defer is REGISTERED first and the
+	// status-persist defer is REGISTERED second. Defers fire LIFO, so
+	// the status-persist defer fires first and this one fires last.
+	// That ordering puts the final terminal job.Status on the
+	// `job_billing_summary` log line we emit here.
 	//
 	// Admin jobs and DB-less paths are skipped — they never reserved a
 	// hold and never wrote estimated_cost_precise.
@@ -1366,9 +1370,11 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 //
 // Best-effort: this routine never fails the job. It runs in a defer
 // after the status-persist defer, so any DB error here is logged but
-// does not affect job.Status. The failure mode of "hold leaks" is
-// already bounded by the migration's CHECK (held <= balance) and by
-// the periodic stuck-jobs reaper.
+// does not affect job.Status. The hold-leak failure mode is bounded by:
+//   - the credit_held_precise >= 0 CHECK on users (loud fail on
+//     double-release), and
+//   - the stuck-job reaper (postgres/stuck_jobs.go), which decrements
+//     held when it transitions a stuck job to failed.
 func (w *webrunner) releaseHoldAndLogBilling(job *web.Job) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1389,22 +1395,46 @@ func (w *webrunner) releaseHoldAndLogBilling(job *web.Job) {
 		return
 	}
 
-	estimated, _ := decimal.NewFromString(estimatedStr)
-	actual, _ := decimal.NewFromString(actualStr)
-	delta := actual.Sub(estimated)
-
-	// Release exactly the held amount. CHECK constraint
-	// (credit_held_precise >= 0) prevents double-release; if the held
-	// amount on the user is somehow already 0, the UPDATE will fail
-	// loudly rather than silently wrap to a positive number.
-	if estimated.IsPositive() {
-		_, releaseErr := w.db.ExecContext(ctx,
-			`UPDATE users
-			 SET credit_held_precise = credit_held_precise - $1::numeric
-			 WHERE id = $2`,
-			estimatedStr, job.UserID,
+	// Parse both columns up-front. NewFromString errors are surfaced
+	// rather than silently treated as zero — a malformed numeric in
+	// either column is a schema regression we want to scream about, not
+	// silently leak a hold against. The COALESCE in the SELECT means
+	// these strings are always at minimum "0", but the defensive parse
+	// guards against future shape changes.
+	estimated, err := decimal.NewFromString(estimatedStr)
+	if err != nil {
+		w.logger.Error("billing_summary_parse_failed",
+			slog.String("job_id", job.ID),
+			slog.String("field", "estimated_cost_precise"),
+			slog.String("raw", estimatedStr),
+			slog.Any("error", err),
 		)
-		if releaseErr != nil {
+		return
+	}
+	actual, err := decimal.NewFromString(actualStr)
+	if err != nil {
+		w.logger.Error("billing_summary_parse_failed",
+			slog.String("job_id", job.ID),
+			slog.String("field", "actual_cost_precise"),
+			slog.String("raw", actualStr),
+			slog.Any("error", err),
+		)
+		return
+	}
+	delta := actual.Sub(estimated)
+	quoted := estimated.IsPositive()
+
+	// Release exactly the held amount. We delegate to the canonical
+	// ReleaseHold so there is one implementation of the release
+	// invariant — see ConcurrentLimitService.ReleaseHold for the
+	// contract (loud failure if the user no longer has the held amount).
+	//
+	// Skip when no quote was reserved (admin job, or job created before
+	// migration 000036). estimated is the stored quote, not a recomputed
+	// estimate, so this is safe across pricing changes mid-job.
+	if quoted {
+		amount, _ := estimated.Float64()
+		if releaseErr := w.concurrentLimitSvc.ReleaseHold(ctx, job.UserID, amount); releaseErr != nil {
 			w.logger.Error("credit_hold_release_failed",
 				slog.String("job_id", job.ID),
 				slog.String("user_id", job.UserID),
@@ -1420,22 +1450,27 @@ func (w *webrunner) releaseHoldAndLogBilling(job *web.Job) {
 	// (delta / estimated) histograms, percentage of jobs where
 	// |delta|/estimated > 0.5, etc., to inform the future quote-policy
 	// decision (cap actual at quote × X? refund unused estimate?).
+	//
+	// Float64 conversion is log-only — money math stays in
+	// decimal.Decimal. Exactness flag is irrelevant at six decimals
+	// for credit values up to ~9 × 10⁹.
 	estimatedFloat, _ := estimated.Float64()
 	actualFloat, _ := actual.Float64()
 	deltaFloat, _ := delta.Float64()
 	var deltaPct float64
-	if estimatedFloat > 0 {
+	if quoted {
 		deltaPct = deltaFloat / estimatedFloat
 	}
 	w.logger.Info("job_billing_summary",
 		slog.String("job_id", job.ID),
 		slog.String("user_id", job.UserID),
 		slog.String("status", string(job.Status)),
+		slog.Bool("quote_present", quoted),
 		slog.Float64("estimated_cost", estimatedFloat),
 		slog.Float64("actual_cost", actualFloat),
 		slog.Float64("delta", deltaFloat),
 		slog.Float64("delta_pct", deltaPct),
-		slog.Bool("over_quote", delta.IsPositive()),
+		slog.Bool("over_quote", quoted && delta.IsPositive()),
 	)
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -14,8 +13,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/gosom/google-maps-scraper/models"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
+
+// pqArrayStrings is a thin alias keeping pq.Array's intent obvious at the
+// reaper-CTE call site, where the WHERE id = ANY($1) takes a TEXT[].
+func pqArrayStrings(s []string) any { return pq.Array(s) }
 
 // TestCreateJobWithLimit_ReservesAndReleasesHold pins the contract that
 // CreateJobWithLimit increments credit_held_precise by EstimatedCost and
@@ -126,6 +130,158 @@ func TestCreateJobWithLimit_ConcurrentSubmissionRespectsHold(t *testing.T) {
 	require.Equal(t, "0.700000", readHold(t, db, userID))
 }
 
+// TestCreditHolds_OverQuoteEndOfJobCharge pins the regression that the
+// architectural-review code review caught:
+//
+//	The pre-fix migration shipped a `CHECK (credit_held_precise <=
+//	credit_balance)` constraint. Postgres re-evaluates row-level CHECKs
+//	on every UPDATE of any column in the row, regardless of which
+//	columns changed. The end-of-job charge in ChargeAllJobEvents
+//	decrements credit_balance BEFORE the deferred releaseHoldAndLogBilling
+//	runs, so any actual cost large enough to drive
+//	(balance - actual) < held would trip the CHECK, roll back the
+//	charge transaction, leave the job in "failed" with results already
+//	in the DB, and silently free the user from paying — exactly the
+//	adversarial vector the migration was meant to close.
+//
+// This test simulates the prod end-of-job sequence directly:
+//  1. seed user with balance B and zero held
+//  2. submit a job with estimate E (B and E chosen so available = B-E
+//     is intentionally LESS than the actual we will charge)
+//  3. issue an UPDATE that decrements credit_balance by an actual
+//     cost A > B-E (the over-quote case the CHECK was rejecting)
+//  4. release the hold via the same path webrunner uses
+//  5. assert end state: balance = B - A, held = 0, no errors
+//
+// If anyone ever reintroduces the (held <= balance) CHECK the step-3
+// UPDATE will fail and this test will go red with a clear
+// "check_violation" SQLSTATE 23514 in the error.
+func TestCreditHolds_OverQuoteEndOfJobCharge(t *testing.T) {
+	db, userID := openOrSkip(t)
+	defer cleanupUser(t, db, userID)
+
+	// B = 10, E = 3, A = 8. After the simulated charge the user
+	// should be at balance=2, held=0, total spent=8.
+	const (
+		balance          = "10.000000"
+		estimate         = 3.0
+		actualCharge     = 8.0
+		balanceAfter     = "2.000000"
+		heldAfterRelease = "0.000000"
+	)
+	seedUser(t, db, userID, balance)
+
+	svc := NewConcurrentLimitService(db)
+
+	job := &models.Job{
+		ID:     uuid.Must(uuid.NewV7()).String(),
+		UserID: userID,
+		Name:   "over-quote-regression",
+		Status: models.StatusPending,
+		Date:   time.Now().UTC(),
+	}
+	require.NoError(t, svc.CreateJobWithLimit(context.Background(), job, &JobLimitOpts{
+		EstimatedCost:   estimate,
+		EstimatedPlaces: 40,
+	}))
+	require.Equal(t, "3.000000", readHold(t, db, userID))
+
+	// Step 3: simulate ChargeAllJobEvents' atomic predicate-decrement.
+	// This is the EXACT shape billing/service.go uses so a future
+	// reintroduction of the (held<=balance) CHECK would fail HERE,
+	// where the CHECK is evaluated against the new row state.
+	res, err := db.Exec(
+		`UPDATE users SET credit_balance = credit_balance - $1::numeric
+		 WHERE id = $2 AND credit_balance >= $1::numeric`,
+		actualCharge, userID,
+	)
+	require.NoError(t, err, "the actual end-of-job charge MUST NOT trip a CHECK constraint when balance-after-charge < held")
+	rows, _ := res.RowsAffected()
+	require.Equal(t, int64(1), rows, "the predicate-decrement must succeed when the user has enough balance to cover the actual")
+
+	// Step 4: release the hold via the same path webrunner uses.
+	require.NoError(t, svc.ReleaseHold(context.Background(), userID, estimate))
+
+	// Step 5: end state.
+	require.Equal(t, balanceAfter, readBalance(t, db, userID),
+		"user paid the actual (8) — the original 10 minus 8 = 2")
+	require.Equal(t, heldAfterRelease, readHold(t, db, userID),
+		"hold released regardless of whether actual exceeded estimate")
+}
+
+// TestCreditHolds_StuckJobReaperReleasesHolds pins postgres/stuck_jobs.go's
+// updated behaviour: when a stuck working job is auto-failed by the reaper
+// the user's credit_held_precise must drop by that job's
+// estimated_cost_precise. Pre-fix the reaper updated jobs.status to
+// "failed" but ignored credit_held_precise, leaking holds forever on
+// every worker crash / OOM kill / container eviction.
+//
+// We don't actually run the reaper goroutine here — we simulate its CTE
+// statement directly to keep the test deterministic and DB-pinned.
+func TestCreditHolds_StuckJobReaperReleasesHolds(t *testing.T) {
+	db, userID := openOrSkip(t)
+	defer cleanupUser(t, db, userID)
+
+	seedUser(t, db, userID, "10.000000")
+	svc := NewConcurrentLimitService(db)
+
+	// Submit two jobs, mark both "working" (the state the reaper looks
+	// for) and back-date their updated_at so they're "stuck". After
+	// the reap simulation:
+	//   - both jobs must be in status=failed
+	//   - held must be 0 (both holds released)
+	type jobSpec struct {
+		id    string
+		quote float64
+	}
+	jobs := []jobSpec{{quote: 2.0}, {quote: 3.5}}
+	for i := range jobs {
+		j := &models.Job{
+			ID:     uuid.Must(uuid.NewV7()).String(),
+			UserID: userID,
+			Name:   "reaper-test",
+			Status: models.StatusPending,
+			Date:   time.Now().UTC(),
+		}
+		require.NoError(t, svc.CreateJobWithLimit(context.Background(), j, &JobLimitOpts{
+			EstimatedCost: jobs[i].quote, EstimatedPlaces: 40,
+		}))
+		jobs[i].id = j.ID
+		// Move to working + age it past the threshold.
+		_, err := db.Exec(
+			`UPDATE jobs SET status='working', updated_at=NOW() - INTERVAL '2 hours' WHERE id=$1`,
+			j.ID,
+		)
+		require.NoError(t, err)
+	}
+	// 5.5 = 2.0 + 3.5
+	require.Equal(t, "5.500000", readHold(t, db, userID))
+
+	// Run the same CTE the reaper uses (postgres/stuck_jobs.go).
+	ids := []string{jobs[0].id, jobs[1].id}
+	_, err := db.Exec(
+		`WITH reaped AS (
+		     UPDATE jobs SET status='failed', failure_reason='test', updated_at=NOW()
+		     WHERE id = ANY($1) AND status='working' AND deleted_at IS NULL
+		     RETURNING id, user_id, COALESCE(estimated_cost_precise, 0) AS reserved
+		 ),
+		 per_user AS (
+		     SELECT user_id, SUM(reserved) AS total_reserved FROM reaped
+		     WHERE reserved > 0 GROUP BY user_id
+		 ),
+		 released AS (
+		     UPDATE users u SET credit_held_precise = u.credit_held_precise - p.total_reserved
+		     FROM per_user p WHERE u.id = p.user_id RETURNING u.id
+		 )
+		 SELECT id FROM reaped`,
+		pqArrayStrings(ids),
+	)
+	require.NoError(t, err, "the reaper CTE must release holds atomically with marking jobs failed")
+
+	require.Equal(t, "0.000000", readHold(t, db, userID),
+		"both holds (2.0 + 3.5) must have been released by the reap")
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────
 
 func openOrSkip(t *testing.T) (*sql.DB, string) {
@@ -191,6 +347,3 @@ func readJobEstimate(t *testing.T, db *sql.DB, jobID string) string {
 	require.NoError(t, err)
 	return s
 }
-
-// quiet unused-import lint when the build doesn't run integration tests
-var _ = fmt.Sprintf

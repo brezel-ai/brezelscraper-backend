@@ -229,9 +229,19 @@ func (h *APIHandlers) Scrape(w http.ResponseWriter, r *http.Request) {
 			if h.Deps.Logger != nil {
 				h.Deps.Logger.Info("job_creation_blocked", slog.String("user_id", userID), slog.Any("error", err))
 			}
+			// Render user-facing message via the typed error's
+			// UserMessage. err.Error() is the stable low-cardinality
+			// grouping key for log aggregators ("insufficient
+			// available balance"); the wire string the user sees is
+			// the formatted UserMessage with current numbers.
+			userMsg := err.Error()
+			var balanceErr webservices.ErrInsufficientBalance
+			if errors.As(err, &balanceErr) {
+				userMsg = balanceErr.UserMessage()
+			}
 			renderJSON(w, http.StatusPaymentRequired, models.APIError{
 				Code:    http.StatusPaymentRequired,
-				Message: err.Error(),
+				Message: userMsg,
 			})
 			return
 		}
@@ -287,9 +297,13 @@ func (h *APIHandlers) createJob(ctx context.Context, job *models.Job, w http.Res
 			}
 			var balanceErr webservices.ErrInsufficientBalance
 			if errors.As(err, &balanceErr) {
+				// UserMessage formats the figures for the response;
+				// Error() stays as the low-cardinality grouping key
+				// in logs (the failure was already logged by the
+				// service layer or will be by internalError).
 				renderJSON(w, http.StatusPaymentRequired, models.APIError{
 					Code:    http.StatusPaymentRequired,
-					Message: balanceErr.Error(),
+					Message: balanceErr.UserMessage(),
 				})
 				return err
 			}

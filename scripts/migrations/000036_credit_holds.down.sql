@@ -7,9 +7,6 @@
 BEGIN;
 
 ALTER TABLE users
-    DROP CONSTRAINT IF EXISTS credit_held_not_exceed_balance;
-
-ALTER TABLE users
     DROP CONSTRAINT IF EXISTS credit_held_precise_non_negative;
 
 ALTER TABLE users
