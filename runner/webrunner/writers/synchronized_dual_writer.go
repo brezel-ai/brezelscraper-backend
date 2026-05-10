@@ -354,32 +354,32 @@ func (w *SynchronizedDualWriter) writeToPostgreSQL(ctx context.Context, entry *g
 	) ON CONFLICT (cid, job_id) DO NOTHING`
 
 	res, err := w.db.ExecContext(dbCtx, q,
-		w.userID,             // 1
-		w.jobID,              // 2
-		entry.ID,             // 3
-		entry.Link,           // 4
-		entry.Cid,            // 5
-		entry.Title,          // 6
-		categoriesStr,        // 7
-		entry.Category,       // 8
-		entry.Address,        // 9
+		w.userID,                     // 1
+		w.jobID,                      // 2
+		entry.ID,                     // 3
+		entry.Link,                   // 4
+		entry.Cid,                    // 5
+		entry.Title,                  // 6
+		categoriesStr,                // 7
+		entry.Category,               // 8
+		entry.Address,                // 9
 		string(jsonFields[0].bytes),  // 10  openhours      — string, not []byte (simple_protocol fix)
 		string(jsonFields[1].bytes),  // 11  popular_times
-		entry.WebSite,        // 12
-		entry.Phone,          // 13
-		entry.PlusCode,       // 14
-		entry.ReviewCount,    // 15
-		entry.ReviewRating,   // 16
+		entry.WebSite,                // 12
+		entry.Phone,                  // 13
+		entry.PlusCode,               // 14
+		entry.ReviewCount,            // 15
+		entry.ReviewRating,           // 16
 		string(jsonFields[2].bytes),  // 17  reviews_per_rating
-		entry.Latitude,       // 18
-		entry.Longtitude,     // 19
-		entry.Status,         // 20
-		entry.Description,    // 21
-		entry.ReviewsLink,    // 22
-		entry.Thumbnail,      // 23
-		entry.Timezone,       // 24
-		entry.PriceRange,     // 25
-		entry.DataID,         // 26
+		entry.Latitude,               // 18
+		entry.Longtitude,             // 19
+		entry.Status,                 // 20
+		entry.Description,            // 21
+		entry.ReviewsLink,            // 22
+		entry.Thumbnail,              // 23
+		entry.Timezone,               // 24
+		entry.PriceRange,             // 25
+		entry.DataID,                 // 26
 		string(jsonFields[3].bytes),  // 27  images
 		string(jsonFields[4].bytes),  // 28  reservations
 		string(jsonFields[5].bytes),  // 29  order_online
@@ -389,8 +389,8 @@ func (w *SynchronizedDualWriter) writeToPostgreSQL(ctx context.Context, entry *g
 		string(jsonFields[9].bytes),  // 33  about
 		string(jsonFields[10].bytes), // 34  user_reviews
 		string(jsonFields[11].bytes), // 35  user_reviews_extended
-		emailsStr,            // 36
-		time.Now(),           // 37
+		emailsStr,                    // 36
+		time.Now(),                   // 37
 	)
 
 	if err != nil {
