@@ -133,11 +133,32 @@ func NewEstimationService(db *sql.DB, priceRepo models.PricingRuleRepository, lo
 	}
 }
 
-// getPriceMicro returns the price for an event type in micro-credits,
-// reading from a cached copy of the pricing_rules table. Falls back to
-// hardcoded defaults on DB error or missing rule.
+// ErrPricingUnavailable is returned by EstimateJobCost when the pricing
+// rules cache is empty AND the database is unreachable. Callers should
+// surface this to the user as 503 Service Unavailable, not 200 with a
+// silently-defaulted estimate. Pre-fix the estimator returned hardcoded
+// defaults on DB error — that "fail-open on a money path" pattern meant
+// estimates and end-of-job charges could quote different prices to the
+// same user during a pricing_rules outage.
+var ErrPricingUnavailable = fmt.Errorf("pricing rules unavailable")
+
+// getPriceMicro returns the price for an event type in micro-credits.
+// On a clean cold-start path s.priceRepo is nil (used by unit tests),
+// in which case hardcoded defaults are still returned — the production
+// path goes through loadPrices and bubbles up ErrPricingUnavailable on
+// real DB failures.
 func (s *EstimationService) getPriceMicro(ctx context.Context, eventType string) int64 {
-	prices := s.loadPrices(ctx)
+	prices, err := s.loadPrices(ctx)
+	if err != nil {
+		// Last-resort fallback only used by callers that explicitly
+		// want a "best-effort" price (none in production today). The
+		// estimator itself calls loadPricesStrict via EstimateJobCost
+		// and surfaces the error to the HTTP handler.
+		if p, ok := defaultPricesMicro[eventType]; ok {
+			return p
+		}
+		return 0
+	}
 	if p, ok := prices[eventType]; ok {
 		return p
 	}
@@ -147,12 +168,16 @@ func (s *EstimationService) getPriceMicro(ctx context.Context, eventType string)
 	return 0
 }
 
-// loadPrices returns the cached pricing map (micro-credits), refreshing from DB if stale.
-func (s *EstimationService) loadPrices(ctx context.Context) map[string]int64 {
+// loadPrices returns the cached pricing map (micro-credits), refreshing
+// from DB if stale. When priceRepo is nil (unit tests) returns hardcoded
+// defaults with no error. When the DB lookup fails it returns
+// ErrPricingUnavailable — callers must decide whether to surface that
+// to the user or fall back to defaults explicitly.
+func (s *EstimationService) loadPrices(ctx context.Context) (map[string]int64, error) {
 	priceCacheMu.RLock()
 	if priceCacheData != nil && time.Since(priceCacheTime) < priceCacheTTL {
 		defer priceCacheMu.RUnlock()
-		return priceCacheData
+		return priceCacheData, nil
 	}
 	priceCacheMu.RUnlock()
 
@@ -161,27 +186,31 @@ func (s *EstimationService) loadPrices(ctx context.Context) map[string]int64 {
 
 	// Double-check after acquiring write lock.
 	if priceCacheData != nil && time.Since(priceCacheTime) < priceCacheTTL {
-		return priceCacheData
+		return priceCacheData, nil
 	}
 
 	if s.priceRepo == nil {
-		return defaultPricesMicro
+		// Unit-test path — defaults are intentional, not a failure.
+		return defaultPricesMicro, nil
 	}
 
 	prices, err := s.priceRepo.GetActiveDefaultPrices(ctx)
 	if err != nil {
-		s.log.Warn("pricing_rules_load_failed", slog.Any("error", err))
-		return defaultPricesMicro
+		// Real DB error: surface it. Do NOT cache — next call retries.
+		s.log.Error("pricing_rules_load_failed", slog.Any("error", err))
+		return nil, fmt.Errorf("%w: %v", ErrPricingUnavailable, err)
 	}
 	if len(prices) == 0 {
-		s.log.Warn("no active pricing rules found in DB, using defaults")
-		return defaultPricesMicro
+		// Empty table is a deployment / migration error, not a
+		// transient failure. Same treatment: surface, do not cache.
+		s.log.Error("pricing_rules_empty")
+		return nil, ErrPricingUnavailable
 	}
 
 	priceCacheData = prices
 	priceCacheTime = time.Now()
 	s.log.Debug("pricing_rules_refreshed", slog.Int("count", len(prices)))
-	return priceCacheData
+	return priceCacheData, nil
 }
 
 // estimatePlacesFromDepth returns the approximate number of places for a given
@@ -234,12 +263,32 @@ func (s *EstimationService) EstimateJobCost(
 		imagesTotal = *maxImages
 	}
 
-	// Load unit prices (cached, from DB or defaults).
-	priceJobStart := s.getPriceMicro(ctx, "job_start")
-	pricePlaceScraped := s.getPriceMicro(ctx, "place_scraped")
-	priceContactDetails := s.getPriceMicro(ctx, "contact_details")
-	priceReview := s.getPriceMicro(ctx, "review")
-	priceImage := s.getPriceMicro(ctx, "image")
+	// Load unit prices. Bubble up ErrPricingUnavailable so the HTTP
+	// handler can return 503 — silently defaulting here would let an
+	// estimate succeed with stale prices that disagree with the
+	// end-of-job charge.
+	prices, err := s.loadPrices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	priceLookup := func(eventType string) int64 {
+		if p, ok := prices[eventType]; ok {
+			return p
+		}
+		// Per-event fallback for keys that exist in defaults but not in
+		// the DB-backed map (forward-compat with new event types added
+		// in code before the DB row exists). Logged at warn so ops sees it.
+		if p, ok := defaultPricesMicro[eventType]; ok {
+			s.log.Warn("pricing_event_fallback_to_default", slog.String("event_type", eventType))
+			return p
+		}
+		return 0
+	}
+	priceJobStart := priceLookup("job_start")
+	pricePlaceScraped := priceLookup("place_scraped")
+	priceContactDetails := priceLookup("contact_details")
+	priceReview := priceLookup("review")
+	priceImage := priceLookup("image")
 
 	// ── Place estimation ───────────────────────────────────────────────
 	placesPerKeyword := estimatePlacesFromDepth(depth)
@@ -392,16 +441,35 @@ func generateEstimationNote(keywordCount, depth int, maxResultsExplicit bool, pr
 	)
 }
 
-// CheckSufficientBalance verifies if a user has enough credits for a job.
-// Uses the minimum estimate so users are not blocked unnecessarily.
+// CheckSufficientBalance verifies that a user has enough AVAILABLE credit
+// (balance minus already-reserved holds) for a job at the FULL estimated
+// total — not the optimistic minimum.
+//
+// Two reasons we use Total here, not MinTotal:
+//
+//  1. Consistency with the transactional gate in
+//     ConcurrentLimitService.CreateJobWithLimit: that gate compares
+//     against EstimatedCost (which is Total). If this fast-fail compared
+//     against MinTotal a user with balance ∈ [MinTotal, Total) would
+//     pass this check and fail the next one — same click, two reads of
+//     the same balance, two different verdicts. Confusing for the user
+//     and an unprovable support ticket.
+//
+//  2. Persisted-quote semantics: Total is also what we now write to
+//     jobs.estimated_cost_precise as the user's quote. The gate must
+//     match the quote.
+//
+// "Available" = credit_balance - credit_held_precise (see migration
+// 000036). Holds reserve credits for in-flight jobs so two concurrent
+// submissions can't both pass against the same dollar.
 func (s *EstimationService) CheckSufficientBalance(ctx context.Context, userID string, estimate *CostEstimate) error {
 	if s.db == nil {
 		return fmt.Errorf("database not available")
 	}
 
-	var balanceStr string
-	const query = `SELECT COALESCE(credit_balance, 0)::text FROM users WHERE id = $1`
-	err := s.db.QueryRowContext(ctx, query, userID).Scan(&balanceStr)
+	var balanceStr, heldStr string
+	const query = `SELECT COALESCE(credit_balance, 0)::text, COALESCE(credit_held_precise, 0)::text FROM users WHERE id = $1`
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(&balanceStr, &heldStr)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("user not found")
@@ -413,20 +481,25 @@ func (s *EstimationService) CheckSufficientBalance(ctx context.Context, userID s
 	if err != nil {
 		return fmt.Errorf("failed to parse credit balance: %w", err)
 	}
-	balanceMicro := balanceDec.Mul(decimal.NewFromInt(microUnit)).IntPart()
+	heldDec, err := decimal.NewFromString(heldStr)
+	if err != nil {
+		return fmt.Errorf("failed to parse credit held: %w", err)
+	}
+	availableDec := balanceDec.Sub(heldDec)
+	availableMicro := availableDec.Mul(decimal.NewFromInt(microUnit)).IntPart()
 
-	if balanceMicro < estimate.MinTotalMicro() {
-		creditBalance := microToCredits(balanceMicro)
+	if availableMicro < estimate.TotalMicro() {
+		availableFloat, _ := availableDec.Float64()
 		s.log.Warn("insufficient_credits",
 			slog.String("user_id", userID),
-			slog.Float64("balance", creditBalance),
+			slog.Float64("available", availableFloat),
 			slog.Float64("required", estimate.Total),
 			slog.Int("places", estimate.Places),
 		)
 		return fmt.Errorf(
-			"insufficient credits: you have %.4f credits but this job requires a minimum of %.4f credits to start (estimated cost for %d places). Please purchase more credits to continue",
-			creditBalance,
-			estimate.TotalMin,
+			"insufficient credits: you have %.4f credits available but this job requires %.4f credits to start (estimated cost for %d places). Please purchase more credits to continue",
+			availableFloat,
+			estimate.Total,
 			estimate.Places,
 		)
 	}

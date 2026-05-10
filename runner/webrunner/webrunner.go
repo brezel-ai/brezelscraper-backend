@@ -36,6 +36,7 @@ import (
 	"github.com/gosom/scrapemate/adapters/writers/csvwriter"
 	"github.com/gosom/scrapemate/scrapemateapp"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
+	"github.com/shopspring/decimal"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -681,6 +682,24 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		errors.New("scrapeJob exited without classification"))
 	job.Status = outcome.Status
 	job.FailureReason = outcome.FailureReason
+
+	// Release the credit hold and emit the quote-vs-actual observability
+	// line, regardless of how scrapeJob exits (success, failure, panic
+	// recovery, or early return). The hold was reserved in
+	// ConcurrentLimitService.CreateJobWithLimit at submission time; it
+	// must be released exactly once per job to keep credit_held_precise
+	// in sync with the user's actually-in-flight estimates.
+	//
+	// Order matters with the status-persist defer below: defers run LIFO,
+	// so this defer fires AFTER status is persisted. That way the
+	// `job_billing_summary` log carries the final terminal status.
+	//
+	// Admin jobs and DB-less paths are skipped — they never reserved a
+	// hold and never wrote estimated_cost_precise.
+	if job.Source != models.SourceAdmin && w.db != nil {
+		defer w.releaseHoldAndLogBilling(job)
+	}
+
 	// Always persist the final job status on exit
 	defer func() {
 		deferCtx, deferCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1333,6 +1352,91 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 	// Charging of places is attempted before marking success above; no charge here
 
 	return outcome
+}
+
+// releaseHoldAndLogBilling reads the persisted quote (estimated_cost_precise)
+// and the running tally of actual charges (actual_cost_precise — populated
+// by the fn_billing_events_after_insert trigger), releases the credit hold
+// the user reserved at submission, and emits a single observability line
+// per job with the variance.
+//
+// Today the policy is "we don't refund overruns" — we charge actual via
+// ChargeAllJobEvents and that's final. The quote-vs-actual log is the
+// data we need to decide whether to introduce a refund/cap policy later.
+//
+// Best-effort: this routine never fails the job. It runs in a defer
+// after the status-persist defer, so any DB error here is logged but
+// does not affect job.Status. The failure mode of "hold leaks" is
+// already bounded by the migration's CHECK (held <= balance) and by
+// the periodic stuck-jobs reaper.
+func (w *webrunner) releaseHoldAndLogBilling(job *web.Job) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var estimatedStr, actualStr string
+	err := w.db.QueryRowContext(ctx,
+		`SELECT
+		     COALESCE(estimated_cost_precise, 0)::text,
+		     COALESCE(actual_cost_precise, 0)::text
+		 FROM jobs WHERE id = $1`,
+		job.ID,
+	).Scan(&estimatedStr, &actualStr)
+	if err != nil {
+		w.logger.Error("billing_summary_read_failed",
+			slog.String("job_id", job.ID),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	estimated, _ := decimal.NewFromString(estimatedStr)
+	actual, _ := decimal.NewFromString(actualStr)
+	delta := actual.Sub(estimated)
+
+	// Release exactly the held amount. CHECK constraint
+	// (credit_held_precise >= 0) prevents double-release; if the held
+	// amount on the user is somehow already 0, the UPDATE will fail
+	// loudly rather than silently wrap to a positive number.
+	if estimated.IsPositive() {
+		_, releaseErr := w.db.ExecContext(ctx,
+			`UPDATE users
+			 SET credit_held_precise = credit_held_precise - $1::numeric
+			 WHERE id = $2`,
+			estimatedStr, job.UserID,
+		)
+		if releaseErr != nil {
+			w.logger.Error("credit_hold_release_failed",
+				slog.String("job_id", job.ID),
+				slog.String("user_id", job.UserID),
+				slog.String("estimated", estimatedStr),
+				slog.Any("error", releaseErr),
+			)
+		}
+	}
+
+	// One structured event per job, intentionally INFO so it's queryable
+	// in any default-level prod environment without flipping LOG_LEVEL.
+	// Goal: feed a Grafana / Loki dashboard that plots
+	// (delta / estimated) histograms, percentage of jobs where
+	// |delta|/estimated > 0.5, etc., to inform the future quote-policy
+	// decision (cap actual at quote × X? refund unused estimate?).
+	estimatedFloat, _ := estimated.Float64()
+	actualFloat, _ := actual.Float64()
+	deltaFloat, _ := delta.Float64()
+	var deltaPct float64
+	if estimatedFloat > 0 {
+		deltaPct = deltaFloat / estimatedFloat
+	}
+	w.logger.Info("job_billing_summary",
+		slog.String("job_id", job.ID),
+		slog.String("user_id", job.UserID),
+		slog.String("status", string(job.Status)),
+		slog.Float64("estimated_cost", estimatedFloat),
+		slog.Float64("actual_cost", actualFloat),
+		slog.Float64("delta", deltaFloat),
+		slog.Float64("delta_pct", deltaPct),
+		slog.Bool("over_quote", delta.IsPositive()),
+	)
 }
 
 func (w *webrunner) setupMate(_ context.Context, writer io.Writer, job *web.Job, exitMonitor exiter.Exiter) (*scrapemateapp.ScrapemateApp, error) {
