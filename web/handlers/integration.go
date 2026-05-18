@@ -120,7 +120,7 @@ func (h *IntegrationHandler) HandleGoogleCallback(w http.ResponseWriter, r *http
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"error":         "missing_required_scope",
 			"missing_scope": requiredScope,
-			"message":       "Google Drive access was not granted. Please reconnect your Google account and check the Google Drive checkbox on the consent screen.",
+			"message":       "Drive permission missing. Without it, we can't save exports to Google Sheets. Reconnect Google and tick the Drive checkbox.",
 		})
 		return
 	}
@@ -287,7 +287,7 @@ func (h *IntegrationHandler) HandleExportJob(w http.ResponseWriter, r *http.Requ
 					w.WriteHeader(http.StatusUnprocessableEntity)
 					_ = json.NewEncoder(w).Encode(map[string]string{
 						"error":   "needs_reconnect",
-						"message": "Your Google connection is missing Drive access. Open Integrations and reconnect your Google account — make sure to check the Google Drive checkbox on the consent screen.",
+						"message": "Drive permission missing. We can't save this export to Google Sheets. Reconnect Google from Integrations and tick the Drive checkbox.",
 					})
 					return
 				}
