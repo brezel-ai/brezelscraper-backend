@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gosom/google-maps-scraper/models"
 	pkglogger "github.com/gosom/google-maps-scraper/pkg/logger"
 	"github.com/gosom/google-maps-scraper/web/auth"
 	"golang.org/x/time/rate"
@@ -500,12 +501,16 @@ func PerAPIKeyRateLimit(
 
 			if apiKeyID != "" {
 				// API key authenticated: apply tier-specific limit keyed on key UUID.
-				tier := auth.GetAPIKeyPlanTier(req.Context())
+				// Tier comes from the auth middleware, which loads the user row and
+				// stashes models.UserTierFree / models.UserTierPaid in the context
+				// (see web/auth/auth.go withUserContext). A missing or empty value
+				// falls back to free — the safe default for an authorisation
+				// decision: a malformed tier must never grant the looser bucket.
 				var allowed bool
-				switch tier {
-				case "paid":
+				switch auth.GetUserTier(req.Context()) {
+				case models.UserTierPaid:
 					allowed = paidKRL.get(apiKeyID).Allow()
-				default: // "free" or unset
+				default:
 					allowed = freeKRL.get(apiKeyID).Allow()
 				}
 				if !allowed {
