@@ -52,6 +52,15 @@ type User struct {
 	// not stored as its own column and not exposed in API responses (the
 	// `json:"-"` tag keeps it server-side). Consumed by the API rate
 	// limiter to grant paid customers their higher quota.
+	//
+	// Race note: the underlying column is updated by a Stripe webhook
+	// handler with no FOR UPDATE on the read path here. A request that
+	// arrives mid-transaction will see the pre-commit snapshot (Tier=free)
+	// for one or two more requests until the webhook commits. That's a
+	// brief tightening of rate limits on the first paid request burst —
+	// acceptable, NOT a bug to "fix" with a SHARE lock. The webhook also
+	// only ever increments (never decrements), so once Tier=paid for a
+	// user, it stays paid.
 	Tier string `json:"-"`
 }
 

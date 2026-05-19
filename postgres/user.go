@@ -44,13 +44,16 @@ func NewUserRepository(db *sql.DB) UserRepository {
 // query in this repository. Kept in one place so adding a column on the User
 // struct only requires updating one constant + the matching Scan helper.
 //
-// `(COALESCE(total_credits_purchased, 0) > 0)` is a server-side boolean that
-// drives the User.Tier computation in scanUser. Cheaper and less error-prone
-// than shipping the NUMERIC value across the wire and comparing in Go.
+// `(total_credits_purchased > 0)` is a server-side boolean that drives the
+// User.Tier computation in scanUser. Comparing NUMERIC(18,6) values is exact
+// (Postgres NUMERIC is decimal, not float), and the column is NOT NULL with
+// a CHECK (>= 0) constraint (see migration 000012), so no COALESCE needed.
+// The boolean roundtrip avoids shipping the raw amount across the wire just
+// to compare it to zero.
 const userSelectColumns = `id, email, role, stripe_customer_id,
 	COALESCE(refund_deficit_credits, 0)::float8,
 	created_at, updated_at,
-	(COALESCE(total_credits_purchased, 0) > 0)`
+	(total_credits_purchased > 0)`
 
 // rowScanner is the subset of *sql.Row / *sql.Rows we need; lets scanUser work
 // with both single-row and multi-row queries.

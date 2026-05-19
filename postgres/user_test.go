@@ -217,6 +217,49 @@ func TestGetByID_TierResolution(t *testing.T) {
 	}
 }
 
+// TestGetByID_RefundDoesNotDemoteTier locks in the product invariant: once a
+// user makes a successful Stripe payment they keep the paid tier for life,
+// even if the payment is later refunded. The refund path in billing/service.go
+// touches credit_balance and refund_deficit_credits, not
+// total_credits_purchased — but a future bug there must NOT silently demote
+// a paying customer back to the free rate limit. This test pins the
+// monotonic-counter behaviour at the projection level.
+func TestGetByID_RefundDoesNotDemoteTier(t *testing.T) {
+	t.Parallel()
+	db := openUserTestDB(t)
+	ctx := context.Background()
+	repo := NewUserRepository(db)
+	userID := seedTestUser(t, db)
+
+	// Simulate a successful purchase.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE users SET total_credits_purchased = 5.00 WHERE id = $1`, userID); err != nil {
+		t.Fatalf("seed purchase: %v", err)
+	}
+	got, err := repo.GetByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("post-purchase GetByID: %v", err)
+	}
+	if got.Tier != models.UserTierPaid {
+		t.Fatalf("setup: expected paid before refund, got %q", got.Tier)
+	}
+
+	// Simulate the refund: credit_balance drops, refund_deficit_credits rises,
+	// total_credits_purchased is intentionally NOT touched (monotonic counter).
+	if _, err := db.ExecContext(ctx,
+		`UPDATE users SET credit_balance = 0, refund_deficit_credits = 5.00 WHERE id = $1`, userID); err != nil {
+		t.Fatalf("seed refund: %v", err)
+	}
+
+	got, err = repo.GetByID(ctx, userID)
+	if err != nil {
+		t.Fatalf("post-refund GetByID: %v", err)
+	}
+	if got.Tier != models.UserTierPaid {
+		t.Errorf("refund must not demote: expected Tier=%q, got %q", models.UserTierPaid, got.Tier)
+	}
+}
+
 // TestGetByEmail_TierResolution mirrors TestGetByID_TierResolution against the
 // GetByEmail path so both User-returning queries are covered by the same
 // invariant.

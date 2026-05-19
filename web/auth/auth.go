@@ -61,6 +61,25 @@ func GetUserTier(ctx context.Context) string {
 	return models.UserTierFree
 }
 
+// withUserContext attaches the per-request user identity keys (UserIDKey,
+// UserRoleKey, UserTierKey) in a single place. Both the Clerk JWT branch
+// and the API key branch in authenticateRequest use this helper so the
+// three keys are always set together — adding a fourth identity key in
+// future means updating ONE call site, not searching for every WithValue.
+//
+// Passing an empty role or tier is allowed (cold path: DB lookup failed
+// after the credentials were already validated). The accessor helpers
+// (GetUserRole, GetUserTier) translate the empty stored value into the
+// least-privileged safe default. We deliberately do NOT inject "user" or
+// "free" here — the unset-vs-defaulted distinction is useful when
+// debugging "did the lookup actually succeed?".
+func withUserContext(ctx context.Context, userID, role, tier string) context.Context {
+	ctx = context.WithValue(ctx, UserIDKey, userID)
+	ctx = context.WithValue(ctx, UserRoleKey, role)
+	ctx = context.WithValue(ctx, UserTierKey, tier)
+	return ctx
+}
+
 // NewAuthMiddleware creates a new AuthMiddleware.
 // apiKeyRepo and serverSecret may be nil/empty; when either is nil/empty, API key
 // authentication is disabled and all Bearer tokens are validated as Clerk JWTs.
@@ -169,10 +188,7 @@ func (m *AuthMiddleware) authenticateRequest(next http.Handler) http.Handler {
 			}
 		}
 
-		ctx := r.Context()
-		ctx = context.WithValue(ctx, UserIDKey, userID)
-		ctx = context.WithValue(ctx, UserRoleKey, dbUser.Role)
-		ctx = context.WithValue(ctx, UserTierKey, dbUser.Tier)
+		ctx := withUserContext(r.Context(), userID, dbUser.Role, dbUser.Tier)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}))
 
@@ -229,21 +245,27 @@ func (m *AuthMiddleware) authenticateRequest(next http.Handler) http.Handler {
 				}
 			}()
 
-			ctx := r.Context()
-			ctx = context.WithValue(ctx, UserIDKey, userID)
-			ctx = context.WithValue(ctx, APIKeyIDKey, keyID)
+			var role, tier string
 			if apiUser, err := m.userRepo.GetByID(r.Context(), userID); err == nil {
-				ctx = context.WithValue(ctx, UserRoleKey, apiUser.Role)
-				ctx = context.WithValue(ctx, UserTierKey, apiUser.Tier)
+				role = apiUser.Role
+				tier = apiUser.Tier
 			} else {
-				// Role lookup failed (transient DB error, etc.). Default to "user"
-				// via GetUserRole() — safe fallback that denies admin access.
-				m.logger.Warn("api_key_role_lookup_failed",
+				// User-row lookup failed (transient DB error, etc.). Both
+				// role and tier stay empty; the accessor helpers default to
+				// safe values on the cold path:
+				//   - GetUserRole() returns "user" — denies admin access.
+				//   - GetUserTier() returns models.UserTierFree — denies the
+				//     paid bucket (tighter rate limit, never the looser one).
+				// This must NOT auto-promote: a DB hiccup that prevents us
+				// from reading the tier can never grant the higher quota.
+				m.logger.Warn("api_key_user_lookup_failed",
 					slog.String("user_id", userID),
 					slog.String("key_id", keyID),
 					slog.Any("error", err),
 				)
 			}
+			ctx := withUserContext(r.Context(), userID, role, tier)
+			ctx = context.WithValue(ctx, APIKeyIDKey, keyID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
