@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -35,27 +36,49 @@ func TestRateLimitHeaders_EmitsBothModernAndLegacy(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 
-	// Modern: RateLimit-Policy: "api";q=10;w=<int>
+	// Modern: RateLimit-Policy: api;q=10;w=<int>  (bare token, NOT quoted)
 	gotPolicy := rec.Header().Get("RateLimit-Policy")
-	if !regexp.MustCompile(`^"api";q=10;w=\d+$`).MatchString(gotPolicy) {
-		t.Errorf(`RateLimit-Policy: expected "api";q=10;w=<int>, got %q`, gotPolicy)
+	if !regexp.MustCompile(`^api;q=10;w=\d+$`).MatchString(gotPolicy) {
+		t.Errorf(`RateLimit-Policy: expected api;q=10;w=<int>, got %q`, gotPolicy)
 	}
-	// Modern: RateLimit: "api";r=<int>;t=<int>
+	// Modern: RateLimit: api;r=<int>;t=<int>
 	gotRL := rec.Header().Get("RateLimit")
-	if !regexp.MustCompile(`^"api";r=\d+;t=\d+$`).MatchString(gotRL) {
-		t.Errorf(`RateLimit: expected "api";r=<int>;t=<int>, got %q`, gotRL)
+	rlMatch := regexp.MustCompile(`^api;r=(\d+);t=(\d+)$`).FindStringSubmatch(gotRL)
+	if rlMatch == nil {
+		t.Errorf(`RateLimit: expected api;r=<int>;t=<int>, got %q`, gotRL)
 	}
 
+	// Legacy triplet
 	if got := rec.Header().Get("X-RateLimit-Limit"); got != "10" {
 		t.Errorf("X-RateLimit-Limit: want 10, got %q", got)
 	}
-	if got := rec.Header().Get("X-RateLimit-Remaining"); got == "" {
+	gotRemainingLegacy := rec.Header().Get("X-RateLimit-Remaining")
+	if gotRemainingLegacy == "" {
 		t.Error("X-RateLimit-Remaining: expected non-empty")
 	}
-	if got := rec.Header().Get("X-RateLimit-Reset"); got == "" {
+	gotResetEpoch := rec.Header().Get("X-RateLimit-Reset")
+	if gotResetEpoch == "" {
 		t.Error("X-RateLimit-Reset: expected non-empty")
-	} else if _, err := strconv.ParseInt(got, 10, 64); err != nil {
-		t.Errorf("X-RateLimit-Reset: expected Unix epoch int, got %q (%v)", got, err)
+	}
+	resetEpoch, err := strconv.ParseInt(gotResetEpoch, 10, 64)
+	if err != nil {
+		t.Fatalf("X-RateLimit-Reset: expected Unix epoch int, got %q (%v)", gotResetEpoch, err)
+	}
+
+	// Cross-field consistency: modern `r=` must match legacy Remaining,
+	// modern `t=` must match (Reset - now). Catches a regression where the
+	// two header families drift apart (e.g. one hard-coded, the other
+	// derived from a different snapshot).
+	if rlMatch != nil {
+		if rlMatch[1] != gotRemainingLegacy {
+			t.Errorf("modern RateLimit r=%s must equal X-RateLimit-Remaining %s", rlMatch[1], gotRemainingLegacy)
+		}
+		rT, _ := strconv.ParseInt(rlMatch[2], 10, 64)
+		// Allow ±1s drift for clock movement between header writes.
+		drift := resetEpoch - time.Now().Unix() - rT
+		if drift < -1 || drift > 1 {
+			t.Errorf("modern RateLimit t=%d should equal (X-RateLimit-Reset - now) within 1s, got drift=%d", rT, drift)
+		}
 	}
 }
 
@@ -125,8 +148,8 @@ func TestRateLimitHeaders_EmittedOn429(t *testing.T) {
 		if got := rec.Header().Get("X-RateLimit-Limit"); got != "1" {
 			t.Errorf("X-RateLimit-Limit on 429: want 1, got %q", got)
 		}
-		if got := rec.Header().Get("RateLimit"); !strings.HasPrefix(got, `"api";r=0;t=`) {
-			t.Errorf(`RateLimit on 429: want prefix "api";r=0;t=, got %q`, got)
+		if got := rec.Header().Get("RateLimit"); !strings.HasPrefix(got, "api;r=0;t=") {
+			t.Errorf("RateLimit on 429: want prefix api;r=0;t=, got %q", got)
 		}
 		if got := rec.Header().Get("Retry-After"); got != "1" {
 			t.Errorf("Retry-After on 429: want 1, got %q", got)

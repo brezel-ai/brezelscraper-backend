@@ -521,16 +521,23 @@ func writeRateLimitHeaders(w http.ResponseWriter, s LimiterSnapshot) {
 	}
 	// Window = the time it takes a fully-drained bucket to refill to Burst.
 	// Ceiling division; minimum 1 so we never emit "w=0" (clients would
-	// divide by it).
+	// divide by it). `win` rather than `w` to avoid shadowing the
+	// http.ResponseWriter parameter — easy to introduce when the
+	// header-write lines below get moved or wrapped.
 	window := 1
 	if s.Limit > 0 {
-		w := int(float64(s.Burst)/float64(s.Limit) + 0.9999)
-		if w > window {
-			window = w
+		win := int(float64(s.Burst)/float64(s.Limit) + 0.9999)
+		if win > window {
+			window = win
 		}
 	}
-	policy := fmt.Sprintf("%q;q=%d;w=%d", rateLimitPolicyName, s.Burst, window)
-	current := fmt.Sprintf("%q;r=%d;t=%d", rateLimitPolicyName, s.Remaining, s.ResetSeconds)
+	// The policy name is emitted as a bare structured-field key/token, not
+	// as a quoted string. RFC 8941 §3.2 says a Dictionary member-name is a
+	// `key` (lcalpha-leading), and `sf-item`s in a List use the same token
+	// shape by convention. The IETF rate-limit draft's own examples are
+	// `default;q=100;w=10` and `default;r=50;t=30` — no quotes.
+	policy := fmt.Sprintf("%s;q=%d;w=%d", rateLimitPolicyName, s.Burst, window)
+	current := fmt.Sprintf("%s;r=%d;t=%d", rateLimitPolicyName, s.Remaining, s.ResetSeconds)
 	w.Header().Set("RateLimit-Policy", policy)
 	w.Header().Set("RateLimit", current)
 	w.Header().Set("X-RateLimit-Limit", strconv.Itoa(s.Burst))
