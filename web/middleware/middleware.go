@@ -506,16 +506,23 @@ func PerAPIKeyRateLimit(
 				// (see web/auth/auth.go withUserContext). A missing or empty value
 				// falls back to free — the safe default for an authorisation
 				// decision: a malformed tier must never grant the looser bucket.
+				tier := auth.GetUserTier(req.Context())
 				var allowed bool
-				switch auth.GetUserTier(req.Context()) {
+				switch tier {
 				case models.UserTierPaid:
 					allowed = paidKRL.get(apiKeyID).Allow()
 				default:
 					allowed = freeKRL.get(apiKeyID).Allow()
 				}
 				if !allowed {
+					// tier is included so ops can debug "is paid user X actually
+					// getting paid quotas?" from log aggregation alone, and so a
+					// future "paid users hitting the free bucket" alert is easy
+					// to wire up — the lack of this signal is what let the
+					// "tier never propagated" bug live for as long as it did.
 					slog.Warn("rate_limit_exceeded",
 						slog.String("key", apiKeyID),
+						slog.String("tier", tier),
 						slog.String("path", req.URL.Path),
 						slog.String("method", req.Method),
 					)
