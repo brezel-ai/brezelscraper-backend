@@ -41,9 +41,25 @@ const (
 	APIKeyPlanTierKey ContextKey = "api_key_plan_tier"
 	// UserRoleKey is the context key for storing the user's RBAC role.
 	UserRoleKey ContextKey = "user_role"
+	// UserTierKey is the context key for storing the user's billing tier
+	// (models.UserTierFree or models.UserTierPaid). Consumed by the rate
+	// limiter to grant paid customers their higher quota. Populated by
+	// the auth middleware on both the Clerk JWT and API key paths.
+	UserTierKey ContextKey = "user_tier"
 	// AuthHeaderName is the name of the authentication header.
 	AuthHeaderName = "Authorization"
 )
+
+// GetUserTier returns the authenticated user's billing tier from the
+// request context, defaulting to models.UserTierFree when absent. Treating
+// an unset value as free is the safe default for an authorisation decision:
+// a missing or malformed tier should never grant the higher quota.
+func GetUserTier(ctx context.Context) string {
+	if v, ok := ctx.Value(UserTierKey).(string); ok && v != "" {
+		return v
+	}
+	return models.UserTierFree
+}
 
 // NewAuthMiddleware creates a new AuthMiddleware.
 // apiKeyRepo and serverSecret may be nil/empty; when either is nil/empty, API key
@@ -156,6 +172,7 @@ func (m *AuthMiddleware) authenticateRequest(next http.Handler) http.Handler {
 		ctx := r.Context()
 		ctx = context.WithValue(ctx, UserIDKey, userID)
 		ctx = context.WithValue(ctx, UserRoleKey, dbUser.Role)
+		ctx = context.WithValue(ctx, UserTierKey, dbUser.Tier)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}))
 
@@ -217,6 +234,7 @@ func (m *AuthMiddleware) authenticateRequest(next http.Handler) http.Handler {
 			ctx = context.WithValue(ctx, APIKeyIDKey, keyID)
 			if apiUser, err := m.userRepo.GetByID(r.Context(), userID); err == nil {
 				ctx = context.WithValue(ctx, UserRoleKey, apiUser.Role)
+				ctx = context.WithValue(ctx, UserTierKey, apiUser.Tier)
 			} else {
 				// Role lookup failed (transient DB error, etc.). Default to "user"
 				// via GetUserRole() — safe fallback that denies admin access.
