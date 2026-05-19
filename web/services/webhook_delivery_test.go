@@ -985,8 +985,37 @@ func TestDeliverOne_ExhaustedRetriesTicksBreaker(t *testing.T) {
 	w.deliverOne(context.Background(), delivery)
 
 	assert.True(t, recordFailureCalled, "RecordDeliveryFailure must be called when retries are exhausted")
-	assert.Equal(t, "10_consecutive_failures", recordFailureReason, "disable reason must be human-readable enum value matching docs")
+	// Server returns 500 — classifyFailure must tag the breaker trip with
+	// the actual failure mode so disabled_reason retains forensic value
+	// (vs an opaque "you crossed the threshold" tag).
+	assert.Equal(t, "http_5xx", recordFailureReason, "disable reason must classify the last failure mode")
 	assert.True(t, markFailedCalled, "MarkFailed should still be called on the delivery row")
+}
+
+// TestClassifyFailure pins the disabled_reason taxonomy. These strings
+// ship to webhook_configs.disabled_reason and clients may end up
+// surfacing them in dashboards — changing them silently would break
+// downstream consumers, so the table doubles as the contract.
+func TestClassifyFailure(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"transport_error_when_no_response", 0, "transport_error"},
+		{"5xx", 500, "http_5xx"},
+		{"5xx_boundary_503", 503, "http_5xx"},
+		{"4xx", 404, "http_4xx"},
+		{"4xx_boundary_400", 400, "http_4xx"},
+		{"3xx_falls_back_to_non_2xx", 301, "non_2xx"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyFailure(tc.status); got != tc.want {
+				t.Errorf("classifyFailure(%d) = %q, want %q", tc.status, got, tc.want)
+			}
+		})
+	}
 }
 
 // TestDeliverOne_IntermediateRetryDoesNotTickBreaker is the inverse

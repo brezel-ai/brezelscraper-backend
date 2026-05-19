@@ -119,20 +119,25 @@ func (w *WebhookDeliveryWorker) deliverOne(ctx context.Context, delivery *models
 	}
 	// Enrich the child logger with user_id now that we have the config.
 	log = log.With(slog.String("user_id", config.UserID))
-	// Two distinct unhealthy states gate delivery:
-	//   - RevokedAt != nil      → user deleted the webhook (terminal)
-	//   - HealthState=disabled  → circuit breaker tripped (recoverable via Reenable)
-	// Both stop delivery, but we log them differently so support can
-	// triage a stuck queue without correlating timestamps.
-	if config.RevokedAt != nil {
-		log.Warn("webhook_config_revoked")
-		w.markFailed(ctx, delivery, log)
-		return
-	}
-	if config.HealthState == models.WebhookHealthDisabled {
-		log.Warn("webhook_config_disabled",
-			slog.String("disabled_reason", deref(config.DisabledReason)),
-		)
+	// IsDeliverable is the single source of truth for "should we POST to
+	// this endpoint?". Branching on the cause here (revoked vs disabled)
+	// is purely for distinct log lines so support can triage a stuck
+	// queue without correlating timestamps — if a new unhealthy state is
+	// ever added to IsDeliverable, this worker will at minimum log the
+	// "not deliverable" line, not silently keep delivering.
+	if !config.IsDeliverable() {
+		switch {
+		case config.RevokedAt != nil:
+			log.Warn("webhook_config_revoked")
+		case config.HealthState == models.WebhookHealthDisabled:
+			log.Warn("webhook_config_disabled",
+				slog.String("disabled_reason", deref(config.DisabledReason)),
+			)
+		default:
+			log.Warn("webhook_config_not_deliverable",
+				slog.String("health_state", config.HealthState),
+			)
+		}
 		w.markFailed(ctx, delivery, log)
 		return
 	}
@@ -329,6 +334,23 @@ func deref(s *string) string {
 	return *s
 }
 
+// classifyFailure maps the last observed delivery outcome to a short
+// machine-readable tag stored in webhook_configs.disabled_reason when
+// the breaker trips. statusCode == 0 is the marker the worker uses for
+// transport-level errors (no HTTP response to classify).
+func classifyFailure(statusCode int) string {
+	switch {
+	case statusCode == 0:
+		return "transport_error"
+	case statusCode >= 500:
+		return "http_5xx"
+	case statusCode >= 400:
+		return "http_4xx"
+	default:
+		return "non_2xx"
+	}
+}
+
 // handleRetry either marks the delivery as failed (if retries exhausted) or
 // schedules the next retry with exponential backoff.
 //
@@ -343,17 +365,19 @@ func (w *WebhookDeliveryWorker) handleRetry(ctx context.Context, delivery *model
 		log.Warn("webhook_delivery_retries_exhausted",
 			slog.Int("status_code", statusCode),
 		)
-		// breakerDisableReason is the human-readable tag stored in
-		// webhook_configs.disabled_reason IF this is the call that trips
-		// the breaker. Already-disabled rows keep their original reason.
-		const breakerDisableReason = "10_consecutive_failures"
-		state, justDisabled, err := w.configRepo.RecordDeliveryFailure(ctx, delivery.WebhookConfigID, breakerDisableReason)
+		// Tag the breaker trip with the LAST observed failure mode so
+		// disabled_reason carries forensic value beyond "you crossed the
+		// threshold". Already-disabled rows keep their original reason
+		// (see CASE in postgres/webhook.go), so this string only sticks
+		// on the trip event itself.
+		reason := classifyFailure(statusCode)
+		state, justDisabled, err := w.configRepo.RecordDeliveryFailure(ctx, delivery.WebhookConfigID, reason)
 		if err != nil {
 			log.Warn("webhook_record_failure_failed", slog.Any("error", err))
 		} else if justDisabled {
 			log.Warn("webhook_circuit_breaker_tripped",
 				slog.String("config_id", delivery.WebhookConfigID),
-				slog.String("disabled_reason", breakerDisableReason),
+				slog.String("disabled_reason", reason),
 			)
 		} else {
 			log.Debug("webhook_failure_recorded", slog.String("health_state", state))

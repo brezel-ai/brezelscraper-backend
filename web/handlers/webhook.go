@@ -287,20 +287,12 @@ func (h *WebhookHandlers) UpdateWebhook(w http.ResponseWriter, r *http.Request) 
 		urlChanged = true
 	}
 
-	if err := h.Deps.WebhookConfigRepo.Update(r.Context(), existing); err != nil {
-		if errors.Is(err, models.ErrWebhookConfigNotFound) {
-			renderJSON(w, http.StatusNotFound, models.APIError{Code: http.StatusNotFound, Message: "webhook config not found or already revoked"})
-			return
-		}
-		internalError(w, h.Deps.Logger, err, "failed to update webhook config",
-			slog.String("user_id", userID), slog.String("webhook_id", webhookID), slog.String("path", r.URL.Path), slog.String("method", r.Method))
-		return
-	}
-
-	// Re-enable runs as a separate write so the breaker reset is atomic
-	// with respect to the metadata update: if Update succeeded but
-	// Reenable fails (e.g. the config was concurrently revoked), the
-	// metadata still landed and the user just retries the re-enable.
+	// Reenable BEFORE Update so a partial-write failure can't leave the
+	// row in a "metadata changed but still disabled" state — the user's
+	// mental model on a PATCH that contains both is "fix everything", and
+	// having only the metadata land would confuse the retry. If Reenable
+	// returns NotFound (e.g. revoked between GetByID and now), bail
+	// before touching anything else.
 	reenabled := false
 	if req.Reenable != nil && *req.Reenable {
 		if err := h.Deps.WebhookConfigRepo.Reenable(r.Context(), webhookID, userID); err != nil {
@@ -313,6 +305,16 @@ func (h *WebhookHandlers) UpdateWebhook(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		reenabled = true
+	}
+
+	if err := h.Deps.WebhookConfigRepo.Update(r.Context(), existing); err != nil {
+		if errors.Is(err, models.ErrWebhookConfigNotFound) {
+			renderJSON(w, http.StatusNotFound, models.APIError{Code: http.StatusNotFound, Message: "webhook config not found or already revoked"})
+			return
+		}
+		internalError(w, h.Deps.Logger, err, "failed to update webhook config",
+			slog.String("user_id", userID), slog.String("webhook_id", webhookID), slog.String("path", r.URL.Path), slog.String("method", r.Method))
+		return
 	}
 
 	if h.Deps.Logger != nil {

@@ -38,6 +38,7 @@ type mockWebhookConfigRepo struct {
 	revokeErr     error
 	reenableErr   error
 	created       *models.WebhookConfig // captures last Create call
+	updateCount   int                   // increments on every Update call
 	reenabledIDs  []string              // captures every Reenable call (in order)
 }
 
@@ -88,7 +89,8 @@ func (m *mockWebhookConfigRepo) ListActiveWithSecretByUserID(_ context.Context, 
 	return m.ListActiveByUserID(context.Background(), userID)
 }
 
-func (m *mockWebhookConfigRepo) Update(_ context.Context, cfg *models.WebhookConfig) error {
+func (m *mockWebhookConfigRepo) Update(_ context.Context, _ *models.WebhookConfig) error {
+	m.updateCount++
 	return m.updateErr
 }
 
@@ -563,6 +565,69 @@ func TestUpdateWebhook_ReenableTrue(t *testing.T) {
 	}
 	if len(repo.reenabledIDs) != 1 || repo.reenabledIDs[0] != testWebhookID1 {
 		t.Errorf("expected Reenable called once with %q, got %v", testWebhookID1, repo.reenabledIDs)
+	}
+}
+
+// TestUpdateWebhook_NameAndReenableTogether confirms that mixing
+// metadata changes with a reenable in a single PATCH triggers BOTH
+// repository writes. The handler intentionally runs Reenable before
+// Update (see handler comment) so a Reenable failure short-circuits
+// before metadata lands; this test pins down the happy-path "both ran".
+func TestUpdateWebhook_NameAndReenableTogether(t *testing.T) {
+	repo := &mockWebhookConfigRepo{
+		configs: []*models.WebhookConfig{
+			{
+				ID:          testWebhookID1,
+				UserID:      "user-1",
+				Name:        "Old",
+				URL:         "https://example.com/hook",
+				HealthState: models.WebhookHealthDisabled,
+			},
+		},
+	}
+	h := newWebhookHandlers(repo)
+	yes := true
+	req := webhookReq("PATCH", "/api/v1/webhooks/wh-1", updateWebhookRequest{Name: "New", Reenable: &yes})
+	req = withUserID(req, "user-1")
+	req = withWebhookID(req, testWebhookID1)
+	rec := httptest.NewRecorder()
+	h.UpdateWebhook(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.reenabledIDs) != 1 {
+		t.Errorf("expected Reenable called once, got %v", repo.reenabledIDs)
+	}
+	if repo.updateCount != 1 {
+		t.Errorf("expected Update called once when name+reenable both supplied, got %d", repo.updateCount)
+	}
+}
+
+// TestUpdateWebhook_ReenableNotFoundShortCircuitsUpdate pins down the
+// partial-write resolution from the Phase 4 review: Reenable runs first,
+// so if the config has been concurrently revoked, the metadata Update
+// must NOT also fire — caller sees a clean 404 and no partial side effect.
+func TestUpdateWebhook_ReenableNotFoundShortCircuitsUpdate(t *testing.T) {
+	repo := &mockWebhookConfigRepo{
+		configs: []*models.WebhookConfig{
+			{ID: testWebhookID1, UserID: "user-1", Name: "Hook", URL: "https://example.com/hook"},
+		},
+		reenableErr: models.ErrWebhookConfigNotFound,
+	}
+	h := newWebhookHandlers(repo)
+	yes := true
+	req := webhookReq("PATCH", "/api/v1/webhooks/wh-1", updateWebhookRequest{Name: "Wont-Land", Reenable: &yes})
+	req = withUserID(req, "user-1")
+	req = withWebhookID(req, testWebhookID1)
+	rec := httptest.NewRecorder()
+	h.UpdateWebhook(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCount != 0 {
+		t.Errorf("Update must NOT be called when Reenable returns NotFound (no partial writes), got updateCount=%d", repo.updateCount)
 	}
 }
 

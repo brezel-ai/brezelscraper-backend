@@ -303,6 +303,12 @@ func (r *webhookConfigRepository) RecordDeliveryFailure(ctx context.Context, con
 		UPDATE webhook_configs
 		SET consecutive_failures = consecutive_failures + 1,
 		    health_state = CASE
+		        -- Once disabled, stay disabled until an explicit Reenable
+		        -- or RecordDeliverySuccess clears the state. Without this
+		        -- clause, the next-tier CASE arm below could demote a
+		        -- disabled row to 'degraded' while disabled_at is still
+		        -- populated, violating chk_webhook_configs_disabled_at_consistency.
+		        WHEN health_state = 'disabled' THEN 'disabled'
 		        WHEN consecutive_failures + 1 >= $2 THEN 'disabled'
 		        WHEN consecutive_failures + 1 >= $3 THEN 'degraded'
 		        ELSE health_state
