@@ -34,13 +34,17 @@ type createWebhookResponse struct {
 }
 
 type listWebhookItem struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	URL        string `json:"url"`
-	VerifiedAt string `json:"verified_at,omitempty"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
-	RevokedAt  string `json:"revoked_at,omitempty"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	URL                 string `json:"url"`
+	VerifiedAt          string `json:"verified_at,omitempty"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+	RevokedAt           string `json:"revoked_at,omitempty"`
+	HealthState         string `json:"health_state"`
+	ConsecutiveFailures int    `json:"consecutive_failures"`
+	DisabledAt          string `json:"disabled_at,omitempty"`
+	DisabledReason      string `json:"disabled_reason,omitempty"`
 }
 
 type updateWebhookRequest struct {
@@ -74,17 +78,25 @@ func (h *WebhookHandlers) ListWebhooks(w http.ResponseWriter, r *http.Request) {
 	items := make([]listWebhookItem, 0, len(configs))
 	for _, c := range configs {
 		item := listWebhookItem{
-			ID:        c.ID,
-			Name:      c.Name,
-			URL:       c.URL,
-			CreatedAt: c.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			UpdatedAt: c.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			ID:                  c.ID,
+			Name:                c.Name,
+			URL:                 c.URL,
+			CreatedAt:           c.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:           c.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			HealthState:         c.HealthState,
+			ConsecutiveFailures: c.ConsecutiveFailures,
 		}
 		if c.VerifiedAt != nil {
 			item.VerifiedAt = c.VerifiedAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		if c.RevokedAt != nil {
 			item.RevokedAt = c.RevokedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if c.DisabledAt != nil {
+			item.DisabledAt = c.DisabledAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if c.DisabledReason != nil {
+			item.DisabledReason = *c.DisabledReason
 		}
 		items = append(items, item)
 	}
