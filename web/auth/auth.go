@@ -36,8 +36,12 @@ const (
 	UserIDKey ContextKey = "user_id"
 	// APIKeyIDKey is the context key for the API key UUID (set only for API key auth).
 	APIKeyIDKey ContextKey = "api_key_id"
-	// APIKeyPlanTierKey is kept for rate-limiter compatibility; always empty with the
-	// full implementation (no plan tiers in api_keys schema).
+	// APIKeyPlanTierKey is retained for one release window for any out-of-tree
+	// callers that may still read this key directly. The auth middleware no
+	// longer writes to it — tier now lives on UserTierKey (set by
+	// withUserContext on every authenticated request).
+	//
+	// Deprecated: read UserTierKey via GetUserTier instead.
 	APIKeyPlanTierKey ContextKey = "api_key_plan_tier"
 	// UserRoleKey is the context key for storing the user's RBAC role.
 	UserRoleKey ContextKey = "user_role"
@@ -297,11 +301,16 @@ func GetAPIKeyID(ctx context.Context) string {
 	return id
 }
 
-// GetAPIKeyPlanTier returns the plan tier for rate-limiter compatibility.
-// Always returns an empty string with the full API key implementation (no plan tiers).
+// GetAPIKeyPlanTier is retained as a thin alias to GetUserTier for one
+// release window so any out-of-tree callers continue to compile. The tier
+// has moved from "a property of the API key" to "a property of the user"
+// because we charge users (not keys) for credit purchases — see
+// withUserContext in this file. APIKeyPlanTierKey is no longer written by
+// the auth middleware and will be removed in a future cleanup.
+//
+// Deprecated: call GetUserTier directly.
 func GetAPIKeyPlanTier(ctx context.Context) string {
-	tier, _ := ctx.Value(APIKeyPlanTierKey).(string)
-	return tier
+	return GetUserTier(ctx)
 }
 
 // GetUserID extracts the user ID from the request context.
