@@ -36,7 +36,9 @@ type mockWebhookConfigRepo struct {
 	listActiveErr error
 	updateErr     error
 	revokeErr     error
+	reenableErr   error
 	created       *models.WebhookConfig // captures last Create call
+	reenabledIDs  []string              // captures every Reenable call (in order)
 }
 
 func (m *mockWebhookConfigRepo) Create(_ context.Context, cfg *models.WebhookConfig) error {
@@ -96,6 +98,27 @@ func (m *mockWebhookConfigRepo) Revoke(_ context.Context, id string, ownerUserID
 	}
 	for _, c := range m.configs {
 		if c.ID == id && c.UserID == ownerUserID {
+			return nil
+		}
+	}
+	return models.ErrWebhookConfigNotFound
+}
+
+func (m *mockWebhookConfigRepo) RecordDeliverySuccess(_ context.Context, _ string) error {
+	return nil
+}
+
+func (m *mockWebhookConfigRepo) RecordDeliveryFailure(_ context.Context, _, _ string) (string, bool, error) {
+	return models.WebhookHealthHealthy, false, nil
+}
+
+func (m *mockWebhookConfigRepo) Reenable(_ context.Context, id, ownerUserID string) error {
+	if m.reenableErr != nil {
+		return m.reenableErr
+	}
+	for _, c := range m.configs {
+		if c.ID == id && c.UserID == ownerUserID {
+			m.reenabledIDs = append(m.reenabledIDs, id)
 			return nil
 		}
 	}
@@ -507,6 +530,64 @@ func TestUpdateWebhook_NameOnly(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestUpdateWebhook_ReenableTrue covers the user-driven recovery path: a
+// PATCH with {"reenable": true} on a disabled config must invoke Reenable
+// on the repo and return 204. Other request fields can coexist (here we
+// send no other fields, but mixing should still work — the writes are
+// independent).
+func TestUpdateWebhook_ReenableTrue(t *testing.T) {
+	repo := &mockWebhookConfigRepo{
+		configs: []*models.WebhookConfig{
+			{
+				ID:          testWebhookID1,
+				UserID:      "user-1",
+				Name:        "Disabled Hook",
+				URL:         "https://example.com/hook",
+				HealthState: models.WebhookHealthDisabled,
+			},
+		},
+	}
+	h := newWebhookHandlers(repo)
+	yes := true
+	req := webhookReq("PATCH", "/api/v1/webhooks/wh-1", updateWebhookRequest{Reenable: &yes})
+	req = withUserID(req, "user-1")
+	req = withWebhookID(req, testWebhookID1)
+	rec := httptest.NewRecorder()
+	h.UpdateWebhook(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.reenabledIDs) != 1 || repo.reenabledIDs[0] != testWebhookID1 {
+		t.Errorf("expected Reenable called once with %q, got %v", testWebhookID1, repo.reenabledIDs)
+	}
+}
+
+// TestUpdateWebhook_ReenableFalseIsNoop confirms the pointer semantics:
+// {"reenable": false} explicitly sent is ignored (re-enabling is a
+// user-initiated recovery, never a re-disable). Only true triggers a write.
+func TestUpdateWebhook_ReenableFalseIsNoop(t *testing.T) {
+	repo := &mockWebhookConfigRepo{
+		configs: []*models.WebhookConfig{
+			{ID: testWebhookID1, UserID: "user-1", Name: "Hook", URL: "https://example.com/hook"},
+		},
+	}
+	h := newWebhookHandlers(repo)
+	no := false
+	req := webhookReq("PATCH", "/api/v1/webhooks/wh-1", updateWebhookRequest{Reenable: &no})
+	req = withUserID(req, "user-1")
+	req = withWebhookID(req, testWebhookID1)
+	rec := httptest.NewRecorder()
+	h.UpdateWebhook(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.reenabledIDs) != 0 {
+		t.Errorf("expected Reenable NOT called for reenable=false, got %v", repo.reenabledIDs)
 	}
 }
 

@@ -46,6 +46,11 @@ type listWebhookItem struct {
 type updateWebhookRequest struct {
 	Name string `json:"name,omitempty"`
 	URL  string `json:"url,omitempty"`
+	// Reenable, when true, clears any circuit-breaker disabled state on
+	// the config. Pointer so a missing field is distinguishable from an
+	// explicit `false` (which is a no-op rather than a re-disable — only
+	// the worker can disable).
+	Reenable *bool `json:"reenable,omitempty"`
 }
 
 // ---- handlers ----
@@ -292,8 +297,31 @@ func (h *WebhookHandlers) UpdateWebhook(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Re-enable runs as a separate write so the breaker reset is atomic
+	// with respect to the metadata update: if Update succeeded but
+	// Reenable fails (e.g. the config was concurrently revoked), the
+	// metadata still landed and the user just retries the re-enable.
+	reenabled := false
+	if req.Reenable != nil && *req.Reenable {
+		if err := h.Deps.WebhookConfigRepo.Reenable(r.Context(), webhookID, userID); err != nil {
+			if errors.Is(err, models.ErrWebhookConfigNotFound) {
+				renderJSON(w, http.StatusNotFound, models.APIError{Code: http.StatusNotFound, Message: "webhook config not found or already revoked"})
+				return
+			}
+			internalError(w, h.Deps.Logger, err, "failed to reenable webhook config",
+				slog.String("user_id", userID), slog.String("webhook_id", webhookID), slog.String("path", r.URL.Path), slog.String("method", r.Method))
+			return
+		}
+		reenabled = true
+	}
+
 	if h.Deps.Logger != nil {
-		h.Deps.Logger.Info("webhook_config_updated", slog.String("user_id", userID), slog.String("webhook_id", webhookID), slog.Bool("url_changed", urlChanged))
+		h.Deps.Logger.Info("webhook_config_updated",
+			slog.String("user_id", userID),
+			slog.String("webhook_id", webhookID),
+			slog.Bool("url_changed", urlChanged),
+			slog.Bool("reenabled", reenabled),
+		)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
