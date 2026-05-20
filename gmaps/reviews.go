@@ -41,6 +41,15 @@ type fetchReviewsParams struct {
 	// stripping the .With(job_id, user_id) attributes set by the webrunner.
 	userID    string
 	userJobID string
+	// proxyURL is the upstream HTTP proxy URL applied to the cookie-authenticated
+	// review-RPC fetch (fetchWithCookies). Empty means direct egress, which is
+	// what the prior implementation always did. Propagated from PlaceJob.ProxyURL,
+	// which the webrunner sets to the same per-scrape rotated proxy already used
+	// for browser navigation. Routing this request through the proxy avoids
+	// Google's datacenter-IP rejection on /maps/rpc/listugcposts — verified May
+	// 2026 with byte-level reproduction: cookies + direct (Netcup) = 33-byte
+	// `[null,null,null,null,null,1]` stub; cookies + Decodo proxy = full reviews.
+	proxyURL string
 }
 
 // userArgsFromParams returns the user_id/job_id args for a fetchReviewsParams,
@@ -228,9 +237,10 @@ func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID 
 }
 
 func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error) {
-	// Try authenticated fetch with Google cookies (bypasses restricted view)
+	// Try authenticated fetch with Google cookies (bypasses restricted view).
+	// Routes through f.params.proxyURL when non-empty — see fetchReviewsParams.proxyURL.
 	if cookieHeader := GetCookieHeader(); cookieHeader != "" {
-		body, err := fetchWithCookies(ctx, u, cookieHeader)
+		body, err := fetchWithCookies(ctx, u, cookieHeader, f.params.proxyURL)
 		if err == nil {
 			return body, nil
 		}
@@ -240,6 +250,7 @@ func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error)
 			"search_job_id", f.params.searchJobID,
 			"place_url", f.params.mapURL,
 			"place_name", f.params.placeName,
+			"proxy_used", proxyHostForLog(f.params.proxyURL),
 			"error", err,
 		)
 		scrapemate.GetLoggerFromContext(ctx).Debug("authenticated_review_fetch_failed_falling_back", args...)
@@ -264,7 +275,17 @@ func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error)
 }
 
 // fetchWithCookies performs an HTTP GET with Google auth cookies using net/http.
-func fetchWithCookies(ctx context.Context, u string, cookieHeader string) ([]byte, error) {
+// When proxyURL is non-empty, the request is routed through that upstream HTTP
+// proxy. This matters because Google's /maps/rpc/listugcposts soft-rejects
+// requests from datacenter IPs even with valid cookies — the fix is to route
+// the authenticated fetch through the same residential/mobile proxy already
+// used for browser navigation. See fetchReviewsParams.proxyURL for context.
+func fetchWithCookies(ctx context.Context, u string, cookieHeader string, proxyURL string) ([]byte, error) {
+	client, err := newCookieFetchClient(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -275,7 +296,6 @@ func fetchWithCookies(ctx context.Context, u string, cookieHeader string) ([]byt
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 
-	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -292,6 +312,41 @@ func fetchWithCookies(ctx context.Context, u string, cookieHeader string) ([]byt
 	}
 
 	return body, nil
+}
+
+// newCookieFetchClient builds the *http.Client used by fetchWithCookies. When
+// proxyURL is empty, the returned client has the zero-value Transport
+// (equivalent to the prior behavior — direct egress, respects HTTPS_PROXY env
+// as a fallback). When proxyURL is non-empty, the transport is pinned to that
+// proxy and the env var is ignored, so we never accidentally bypass the
+// per-scrape rotated proxy that webrunner already selected for this job.
+//
+// Factored out so unit tests can exercise the proxy plumbing without firing
+// real HTTP traffic — see TestNewCookieFetchClient_PinsProxy.
+func newCookieFetchClient(proxyURL string) (*http.Client, error) {
+	transport := &http.Transport{}
+	if proxyURL != "" {
+		pu, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse proxy URL: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(pu)
+	}
+	return &http.Client{Timeout: 30 * time.Second, Transport: transport}, nil
+}
+
+// proxyHostForLog returns a credential-free host:port suitable for log fields.
+// Returns "direct" when no proxy is configured. Strips userinfo so we never
+// emit proxy passwords into Loki / Grafana.
+func proxyHostForLog(proxyURL string) string {
+	if proxyURL == "" {
+		return "direct"
+	}
+	pu, err := url.Parse(proxyURL)
+	if err != nil || pu.Host == "" {
+		return "invalid"
+	}
+	return pu.Host
 }
 
 func extractNextPageToken(data []byte) string {

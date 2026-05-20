@@ -183,7 +183,7 @@ func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 		{
 			name: "api_empty_response",
 			emit: func(ctx context.Context, j *PlaceJob) {
-				emitReviewAPIEmptyResponse(ctx, j, 271, 33, 1)
+				emitReviewAPIEmptyResponse(ctx, j, 271, 33, 1, []byte(")]}'\n[null,null,null,null,null,1]"))
 			},
 			want: "review_api_empty_response",
 		},
