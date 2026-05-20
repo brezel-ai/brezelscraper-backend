@@ -22,6 +22,8 @@ func TestExtractJSONPartialAccepted_LogContext(t *testing.T) {
 	pj.ID = "PLACE-JOB-1"
 	pj.ParentID = "SEARCH-JOB-1"
 	pj.URL = "https://www.google.com/maps/place/Test"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-1"
 
 	emitPartialPayloadAcceptedWarning(ctx, pj, 18867)
 
@@ -49,6 +51,8 @@ func TestJSONExtractionFallback_LogContext(t *testing.T) {
 	pj.ID = "PLACE-JOB-Y"
 	pj.ParentID = "SEARCH-JOB-Y"
 	pj.URL = "https://www.google.com/maps/place/Broken"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-Y"
 
 	emitJSONExtractionFallback(ctx, pj)
 	emitJSONParsingFallback(ctx, pj, errors.New("invalid json"))
@@ -87,6 +91,8 @@ func TestReviewsGenerateURLFailed_LogContext(t *testing.T) {
 		placeJobID:  "PLACE-JOB-R",
 		searchJobID: "SEARCH-JOB-R",
 		placeName:   "Test",
+		userID:      "user_TEST",
+		userJobID:   "USER-JOB-R",
 	}
 	// page is nil — fetch must not deref it before the URL error path
 	f := newReviewFetcher(params)
@@ -117,6 +123,8 @@ func TestReviewPageParseFailed_LogContext(t *testing.T) {
 	pj.ID = "PLACE-JOB-P"
 	pj.ParentID = "SEARCH-JOB-P"
 	pj.URL = "https://www.google.com/maps/place/ParseFail"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-P"
 
 	entry := Entry{Title: "ParseFail Place"}
 
@@ -183,6 +191,8 @@ func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 			pj.ID = "PLACE-JOB-1"
 			pj.ParentID = "SEARCH-JOB-1"
 			pj.URL = "https://www.google.com/maps/place/Test"
+			pj.UserID = "user_TEST"
+			pj.UserJobID = "USER-JOB-1"
 
 			tc.emit(ctx, pj)
 

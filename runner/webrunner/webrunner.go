@@ -934,6 +934,8 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		ExitMonitor:  exitMonitor,
 		ExtraReviews: job.Data.MaxReviews > 0,
 		MaxResults:   job.Data.MaxResults,
+		UserID:       job.UserID,
+		UserJobID:    job.ID,
 	})
 	if err != nil {
 		outcome = OutcomeFailed(CauseRuntimeError, "job configuration failed", err)

@@ -35,6 +35,12 @@ type fetchReviewsParams struct {
 	placeJobID  string
 	searchJobID string
 	placeName   string
+	// userID and userJobID are propagated from PlaceJob.UserID / PlaceJob.UserJobID.
+	// They are emitted explicitly in all reviews.go log calls because
+	// scrapemate replaces the ctx-bound logger per job (scrapemate.go:312),
+	// stripping the .With(job_id, user_id) attributes set by the webrunner.
+	userID    string
+	userJobID string
 }
 
 type fetchReviewsResponse struct {
@@ -78,6 +84,8 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 	reviewURL, err := f.generateURL(f.params.mapURL, "", pageSize, requestIDForSession)
 	if err != nil {
 		scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed",
+			"job_id", f.params.userJobID,
+			"user_id", f.params.userID,
 			"place_job_id", f.params.placeJobID,
 			"search_job_id", f.params.searchJobID,
 			"place_url", f.params.mapURL,
@@ -134,6 +142,8 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 		reviewURL, err = f.generateURL(f.params.mapURL, nextPageToken, currentPageSize, requestIDForSession)
 		if err != nil {
 			scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed",
+				"job_id", f.params.userJobID,
+				"user_id", f.params.userID,
 				"place_job_id", f.params.placeJobID,
 				"search_job_id", f.params.searchJobID,
 				"place_url", f.params.mapURL,
@@ -147,6 +157,8 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 		currentPageBody, err = f.fetchReviewPage(ctx, reviewURL)
 		if err != nil {
 			scrapemate.GetLoggerFromContext(ctx).Error("reviews_fetch_page_failed",
+				"job_id", f.params.userJobID,
+				"user_id", f.params.userID,
 				"place_job_id", f.params.placeJobID,
 				"search_job_id", f.params.searchJobID,
 				"place_url", f.params.mapURL,
@@ -210,6 +222,8 @@ func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error)
 			return body, nil
 		}
 		scrapemate.GetLoggerFromContext(ctx).Debug("authenticated_review_fetch_failed_falling_back",
+			"job_id", f.params.userJobID,
+			"user_id", f.params.userID,
 			"place_job_id", f.params.placeJobID,
 			"search_job_id", f.params.searchJobID,
 			"place_url", f.params.mapURL,

@@ -14,6 +14,8 @@ func TestPlacePayloadInconsistencyCanary_FiresOnRatingWithoutCount(t *testing.T)
 	pj.ID = "PLACE-JOB-X"
 	pj.ParentID = "SEARCH-JOB-X"
 	pj.URL = "https://www.google.com/maps/place/Test"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-X"
 
 	entry := Entry{Title: "Café Libre Berlin", ReviewRating: 4.8, ReviewCount: 0}
 	checkPlacePayloadInvariants(ctx, pj, &entry)
@@ -45,6 +47,8 @@ func TestPlacePayloadInconsistencyCanary_DoesNotFireOnLegitimateZeroReview(t *te
 	pj.ID = "PLACE-JOB-X"
 	pj.ParentID = "SEARCH-JOB-X"
 	pj.URL = "https://www.google.com/maps/place/New"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-X"
 
 	entry := Entry{Title: "Brand new place", ReviewRating: 0, ReviewCount: 0}
 	checkPlacePayloadInvariants(ctx, pj, &entry)
@@ -63,6 +67,8 @@ func TestPlacePayloadInconsistencyCanary_DoesNotFireWhenBothPopulated(t *testing
 	pj.ID = "PLACE-JOB-X"
 	pj.ParentID = "SEARCH-JOB-X"
 	pj.URL = "https://www.google.com/maps/place/Healthy"
+	pj.UserID = "user_TEST"
+	pj.UserJobID = "USER-JOB-X"
 
 	entry := Entry{Title: "Healthy", ReviewRating: 4.5, ReviewCount: 123}
 	checkPlacePayloadInvariants(ctx, pj, &entry)

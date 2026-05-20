@@ -69,6 +69,16 @@ type PlaceJob struct {
 	// N. After this PlaceJob completes, len(entry.Images) ≤ ImagesPerPlace
 	// always holds — the downstream billing query trusts this invariant.
 	ImagesPerPlace int
+
+	// UserID is the Clerk user identifier (e.g., "user_36X..."). Populated by
+	// the webrunner via WithPlaceJobUserContext, propagated from the GmapJob.
+	// Empty in CLI/standalone scrapes — emit helpers handle that gracefully.
+	UserID string
+	// UserJobID is the user-facing jobs.id from the DB (what shows in the
+	// dashboard). NOT the same as PlaceJob.ID (per-place UUID) or
+	// PlaceJob.ParentID (GmapJob.ID — internal). Used as the "job_id" field
+	// in emitted logs so operators can correlate with webrunner lifecycle logs.
+	UserJobID string
 }
 
 func NewPlaceJob(parentID, langCode, u string, extractEmail, extractImages bool, reviewsMax int, opts ...PlaceJobOptions) *PlaceJob {
@@ -114,6 +124,16 @@ func WithPlaceJobExitMonitor(exitMonitor exiter.Exiter) PlaceJobOptions {
 func WithPlaceJobImagesPerPlace(n int) PlaceJobOptions {
 	return func(j *PlaceJob) {
 		j.ImagesPerPlace = n
+	}
+}
+
+// WithPlaceJobUserContext propagates the user-facing job identifiers
+// (user_id and the user-facing job_id) to a PlaceJob so its log lines can
+// be correlated with webrunner lifecycle events in Grafana/Loki.
+func WithPlaceJobUserContext(userID, userJobID string) PlaceJobOptions {
+	return func(j *PlaceJob) {
+		j.UserID = userID
+		j.UserJobID = userJobID
 	}
 }
 
@@ -333,6 +353,8 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 		defer func() {
 			if r := recover(); r != nil {
 				scrapemate.GetLoggerFromContext(ctx).Error("add_extra_reviews_panic",
+					"job_id", j.UserJobID,
+					"user_id", j.UserID,
 					"place_job_id", j.ID,
 					"search_job_id", j.ParentID,
 					"place_url", j.GetURL(),
@@ -544,6 +566,8 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 		defer func() {
 			if r := recover(); r != nil {
 				scrapemate.GetLoggerFromContext(ctx).Error("review_extraction_panic",
+					"job_id", j.UserJobID,
+					"user_id", j.UserID,
 					"place_job_id", j.ID,
 					"search_job_id", j.ParentID,
 					"place_url", j.GetURL(),
@@ -574,6 +598,8 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 				placeJobID:  j.ID,
 				searchJobID: j.ParentID,
 				placeName:   "", // entry.Title is set later in Process — left empty
+				userID:      j.UserID,
+				userJobID:   j.UserJobID,
 			}
 
 			reviewFetcher := newReviewFetcher(params)
@@ -697,6 +723,8 @@ func (j *PlaceJob) extractJSON(ctx context.Context, page playwright.Page) ([]byt
 func checkPlacePayloadInvariants(ctx context.Context, j *PlaceJob, entry *Entry) {
 	if entry.ReviewRating > 0 && entry.ReviewCount == 0 {
 		scrapemate.GetLoggerFromContext(ctx).Warn("place_payload_inconsistent_review_count",
+			"job_id", j.UserJobID,
+			"user_id", j.UserID,
 			"place_job_id", j.ID,
 			"search_job_id", j.ParentID,
 			"place_url", j.GetURL(),
@@ -736,6 +764,8 @@ func isCompletePlacePayload(raw []byte) bool {
 // has already been written as a minimal Entry with just the URL.
 func emitJSONExtractionFallback(ctx context.Context, j *PlaceJob) {
 	scrapemate.GetLoggerFromContext(ctx).Warn("json_extraction_fallback",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
@@ -748,6 +778,8 @@ func emitJSONExtractionFallback(ctx context.Context, j *PlaceJob) {
 // error in Description.
 func emitJSONParsingFallback(ctx context.Context, j *PlaceJob, err error) {
 	scrapemate.GetLoggerFromContext(ctx).Warn("json_parsing_fallback",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
@@ -763,6 +795,8 @@ func emitJSONParsingFallback(ctx context.Context, j *PlaceJob, err error) {
 // will be empty.
 func emitPartialPayloadAcceptedWarning(ctx context.Context, j *PlaceJob, bytes int) {
 	scrapemate.GetLoggerFromContext(ctx).Warn("extract_json_partial_payload_accepted",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
@@ -775,6 +809,8 @@ func emitPartialPayloadAcceptedWarning(ctx context.Context, j *PlaceJob, bytes i
 // threshold and review extraction is skipped for this place.
 func emitReviewCircuitBreakerOpen(ctx context.Context, j *PlaceJob) {
 	scrapemate.GetLoggerFromContext(ctx).Error("review_circuit_breaker_open",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
@@ -787,6 +823,8 @@ func emitReviewCircuitBreakerOpen(ctx context.Context, j *PlaceJob) {
 // emitReviewExtractionFailed is called when the review fetcher returns an error.
 func emitReviewExtractionFailed(ctx context.Context, j *PlaceJob, err error) {
 	scrapemate.GetLoggerFromContext(ctx).Warn("review_extraction_failed",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
@@ -798,6 +836,8 @@ func emitReviewExtractionFailed(ctx context.Context, j *PlaceJob, err error) {
 // review data (silent failure indicating expired cookies or IP block).
 func emitReviewAPIEmptyResponse(ctx context.Context, j *PlaceJob, reviewCountOnPage, responseBytes, consecutiveEmpty int) {
 	scrapemate.GetLoggerFromContext(ctx).Warn("review_api_empty_response",
+		"job_id", j.UserJobID,
+		"user_id", j.UserID,
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
