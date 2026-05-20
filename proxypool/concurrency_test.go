@@ -66,6 +66,57 @@ func TestAcquire_ConcurrentCallersDoNotPanicOrDeadlock(t *testing.T) {
 	}
 }
 
+// TestStats_ConcurrentWithReports verifies Stats() can be called safely
+// while goroutines are actively reporting outcomes. The snapshot is taken
+// under p.mu so reads can't tear, but this exercises the contention path
+// to confirm no deadlock between Stats and Lease.Report* under -race.
+func TestStats_ConcurrentWithReports(t *testing.T) {
+	p, err := New([]string{"http://a", "http://b"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Reporters run a bounded number of iterations and exit.
+	var reportersWG sync.WaitGroup
+	reportersWG.Add(8)
+	for range 8 {
+		go func() {
+			defer reportersWG.Done()
+			for range 100 {
+				lease, err := p.Acquire()
+				if err != nil {
+					continue
+				}
+				lease.ReportSuccess()
+			}
+		}()
+	}
+
+	// Stats observer runs until told to stop.
+	stop := make(chan struct{})
+	observerDone := make(chan struct{})
+	go func() {
+		defer close(observerDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = p.Stats()
+			}
+		}
+	}()
+
+	// Wait for reporters, then signal observer to stop and wait for it.
+	reportersWG.Wait()
+	close(stop)
+	select {
+	case <-observerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: Stats observer did not exit within 5s after stop signal")
+	}
+}
+
 // TestPool_BurnoutScenario simulates the production failure pattern: one of
 // three proxies returns the 33-byte stub (SoftReject) every time. The pool
 // must cool it out, leave the two healthy proxies serving, and ensure
@@ -94,11 +145,20 @@ func TestPool_BurnoutScenario(t *testing.T) {
 		clk.Advance(5 * time.Second)
 	}
 
+	// Expected terminal state for "bad": quarantined. With
+	// quarantineFailThreshold=10 and round-robin giving "bad" exactly 10
+	// turns across 30 iterations, cumulativeFails reaches 10 and the
+	// entry moves to stateQuarantined (not just cooling). The "!healthy"
+	// assertion is intentionally broader to catch any future state
+	// machine regression that lands "bad" anywhere other than healthy.
 	s := p.Stats()
 	for _, e := range s.Entries {
 		if e.Host == "bad" && e.State == "healthy" {
 			t.Errorf("bad proxy still healthy after burnout simulation (cons=%d cum=%d)",
 				e.ConsecutiveFails, e.CumulativeFails)
+		}
+		if e.Host == "bad" && e.State != "quarantined" {
+			t.Logf("bad proxy ended in state=%s (expected quarantined under default thresholds); not a hard failure but worth investigating", e.State)
 		}
 	}
 

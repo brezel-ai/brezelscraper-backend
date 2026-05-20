@@ -1599,6 +1599,9 @@ func (w *webrunner) setupMate(_ context.Context, writer io.Writer, job *web.Job,
 			slog.String("job_id", job.ID),
 			slog.Int("index", proxy.Index),
 			slog.Int("of", proxy.PoolSize),
+			// proxy.URL is non-empty here (guarded by `if proxy.URL != ""`
+			// above), so HostOf cannot return "". No need for the
+			// cmp.Or(..., "direct") wrapper that gmaps callsites use.
 			slog.String("proxy_host", proxypool.HostOf(proxy.URL)),
 		)
 	} else if len(job.Data.Proxies) > 0 {
