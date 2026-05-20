@@ -1676,8 +1676,21 @@ type proxyAssignment struct {
 // docs/superpowers/plans/2026-05-20-proxy-pool-with-health-tracking.md
 // Task 13 for the rationale.
 func classifyProxyOutcome(jobSuccess bool, jobErr error, reviewCircuitTripped bool) (reason proxypool.FailureReason, report bool) {
+	// Filter out context.Canceled. mate.Start returns context.Canceled on
+	// the natural success-path termination (the exit monitor cancels
+	// mateCtx after places_completed==places_found), so a jobSuccess=true
+	// scrape ALMOST ALWAYS has jobErr=context.Canceled. Without this
+	// filter, every successful unlimited-mode scrape would classify as
+	// NetworkErr and a healthy proxy would cool out after 3 successes —
+	// exactly the opposite of what this feature is supposed to do.
+	// classifyOutcome already disambiguates this for the JOB outcome via
+	// the naturalCompletion flag; we mirror that here for proxy health.
+	effectiveErr := jobErr
+	if errors.Is(effectiveErr, context.Canceled) {
+		effectiveErr = nil
+	}
 	switch {
-	case !jobSuccess || jobErr != nil:
+	case !jobSuccess || effectiveErr != nil:
 		return proxypool.NetworkErr, true
 	case reviewCircuitTripped:
 		// Cookies + proxy combination got the 33-byte stub repeatedly

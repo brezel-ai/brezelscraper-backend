@@ -60,13 +60,21 @@ func TestNewCookieFetchClient_PinsProxy(t *testing.T) {
 // TestNewCookieFetchClient_InvalidProxyURL verifies that a parse failure is
 // surfaced as an error rather than silently falling through to direct egress.
 // Silent fallback would have masked the bug we just fixed.
+//
+// CRITICAL: the error MUST NOT embed the raw proxy URL. url.Parse returns
+// *url.Error whose Error() format embeds the full URL including any
+// userinfo (user:password@host) — surfacing that to logs leaks Decodo
+// credentials. The constructor strips userinfo via proxypool.HostOf.
 func TestNewCookieFetchClient_InvalidProxyURL(t *testing.T) {
-	_, err := newCookieFetchClient("ht!tp://broken url")
+	_, err := newCookieFetchClient("ht!tp://user:supersecretpw@broken url")
 	if err == nil {
 		t.Fatalf("expected error for invalid proxy URL, got nil")
 	}
 	if !strings.Contains(err.Error(), "parse proxy URL") {
 		t.Fatalf("error message should mention proxy URL parsing, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "supersecretpw") {
+		t.Fatalf("error message leaks credentials: %q", err.Error())
 	}
 }
 

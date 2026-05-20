@@ -350,7 +350,14 @@ func newCookieFetchClient(proxyURL string) (*http.Client, error) {
 	}
 	pu, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy URL: %w", err)
+		// CRITICAL: do NOT wrap err with %w — url.Parse returns *url.Error
+		// whose Error() formats as "parse <full-URL>: <inner>". The full
+		// URL includes any user:password@ userinfo. Wrapping leaks
+		// credentials into structured logs (emitReviewExtractionFailed
+		// writes this error verbatim into the "error" log field).
+		// Surface the host:port (via proxypool.HostOf) and the inner
+		// error class only.
+		return nil, fmt.Errorf("parse proxy URL %s: invalid proxy URL syntax", proxypool.HostOf(proxyURL))
 	}
 	return &http.Client{
 		Timeout:   30 * time.Second,
