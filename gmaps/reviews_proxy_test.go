@@ -148,29 +148,6 @@ func TestNewReviewFetcher_BuildsCookieClientOnce(t *testing.T) {
 	}
 }
 
-// TestProxyHostForLog covers the credential-stripping helper that feeds the
-// `proxy_used` log field. We never want passwords escaping into Loki.
-func TestProxyHostForLog(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"", "direct"},
-		{"http://gate.decodo.com:10001", "gate.decodo.com:10001"},
-		{"http://user:secret%3Dpw@gate.decodo.com:10001", "gate.decodo.com:10001"},
-		{"://broken", "invalid"},
-	}
-	for _, c := range cases {
-		got := proxyHostForLog(c.in)
-		if got != c.want {
-			t.Errorf("proxyHostForLog(%q) = %q, want %q", c.in, got, c.want)
-		}
-		if strings.Contains(got, "secret") {
-			t.Errorf("proxyHostForLog leaked credentials for input %q: %q", c.in, got)
-		}
-	}
-}
-
 // TestResponseSampleForLog locks in the escaping contract: the field stays
 // on a single log line (no raw newlines), control chars become hex escapes,
 // and the canonical 33-byte unauthenticated stub is recognizable in plain

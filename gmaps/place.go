@@ -10,6 +10,7 @@ package gmaps
 // - Performance optimized with concurrent processing
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/gmaps/images"
+	"github.com/gosom/google-maps-scraper/proxypool"
 )
 
 // reviewFetchBudget caps how long an individual place's review-fetch is
@@ -901,7 +903,7 @@ func emitReviewAPIEmptyResponse(ctx context.Context, j *PlaceJob, reviewCountOnP
 		"response_bytes", responseBytes,
 		"consecutive_empty", consecutiveEmpty,
 		"response_sample", responseSampleForLog(body, 256),
-		"proxy_used", proxyHostForLog(j.ProxyURL),
+		"proxy_used", cmp.Or(proxypool.HostOf(j.ProxyURL), "direct"),
 		"possible_cause", "expired cookies, IP blocked, rate limited, or proxy returning stub",
 	)
 	scrapemate.GetLoggerFromContext(ctx).Warn("review_api_empty_response", args...)

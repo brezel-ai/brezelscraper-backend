@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +26,7 @@ import (
 	pkglogger "github.com/gosom/google-maps-scraper/pkg/logger"
 	"github.com/gosom/google-maps-scraper/pkg/metrics"
 	"github.com/gosom/google-maps-scraper/postgres"
+	"github.com/gosom/google-maps-scraper/proxypool"
 	"github.com/gosom/google-maps-scraper/runner"
 	"github.com/gosom/google-maps-scraper/runner/webrunner/writers"
 	"github.com/gosom/google-maps-scraper/s3uploader"
@@ -1513,21 +1513,6 @@ type proxyAssignment struct {
 // and the seed-job constructor (via runner.SeedJobConfig.ProxyURL), so
 // browser navigation and the cookie-authenticated review-RPC fetch share
 // one identity per scrape.
-// proxyHostForLog returns a credential-free host:port from a proxy URL,
-// suitable for the `proxy_host` field on the proxy_assigned debug log. Local
-// to webrunner so we don't widen the gmaps public surface; mirrors the helper
-// of the same name in gmaps/reviews.go.
-func proxyHostForLog(proxyURL string) string {
-	if proxyURL == "" {
-		return ""
-	}
-	pu, err := url.Parse(proxyURL)
-	if err != nil || pu.Host == "" {
-		return "invalid"
-	}
-	return pu.Host
-}
-
 func (w *webrunner) pickProxyURL() proxyAssignment {
 	n := len(w.proxyURLs)
 	if n == 0 {
@@ -1614,7 +1599,7 @@ func (w *webrunner) setupMate(_ context.Context, writer io.Writer, job *web.Job,
 			slog.String("job_id", job.ID),
 			slog.Int("index", proxy.Index),
 			slog.Int("of", proxy.PoolSize),
-			slog.String("proxy_host", proxyHostForLog(proxy.URL)),
+			slog.String("proxy_host", proxypool.HostOf(proxy.URL)),
 		)
 	} else if len(job.Data.Proxies) > 0 {
 		// User-supplied proxies (job.Data.Proxies) are intentionally NOT forwarded to the scraper.
