@@ -503,7 +503,7 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 		resp.Headers.Add(k, v)
 	}
 
-	raw, err := j.extractJSON(page)
+	raw, err := j.extractJSON(ctx, page)
 	if err != nil {
 		resp.Error = err
 		if j.ExitMonitor != nil {
@@ -630,7 +630,7 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 	return resp
 }
 
-func (j *PlaceJob) extractJSON(page playwright.Page) ([]byte, error) {
+func (j *PlaceJob) extractJSON(ctx context.Context, page playwright.Page) ([]byte, error) {
 	const (
 		maxAttempts   = 15
 		retryInterval = 200 * time.Millisecond
@@ -684,12 +684,7 @@ func (j *PlaceJob) extractJSON(page playwright.Page) ([]byte, error) {
 	}
 
 	if lastPartial != nil {
-		slog.Warn("extract_json_partial_payload_accepted",
-			slog.String("job_id", j.ID),
-			slog.String("place_url", j.GetURL()),
-			slog.Int("bytes", len(lastPartial)),
-			slog.String("detail", "APP_INITIALIZATION_STATE never fully hydrated within 15×200ms; review_count and reviews_per_rating will be empty"),
-		)
+		emitPartialPayloadAcceptedWarning(ctx, j, len(lastPartial))
 		return lastPartial, nil
 	}
 
@@ -721,6 +716,21 @@ func isCompletePlacePayload(raw []byte) bool {
 		return false
 	}
 	return len(four) >= 9
+}
+
+// emitPartialPayloadAcceptedWarning is called by extractJSON when the
+// 15×200ms polling budget exhausts without ever seeing a complete payload
+// (jd[6][4] of length >= 9). Logged at WARN because it's a fallback —
+// we still return a usable payload, but review_count and reviews_per_rating
+// will be empty.
+func emitPartialPayloadAcceptedWarning(ctx context.Context, j *PlaceJob, bytes int) {
+	scrapemate.GetLoggerFromContext(ctx).Warn("extract_json_partial_payload_accepted",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"bytes", bytes,
+		"detail", "APP_INITIALIZATION_STATE never fully hydrated within 15×200ms; review_count and reviews_per_rating will be empty",
+	)
 }
 
 func (j *PlaceJob) getReviewCount(data []byte) int {
