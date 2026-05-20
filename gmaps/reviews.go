@@ -29,9 +29,9 @@ type fetchReviewsParams struct {
 	langCode    string // Language code for the review API (e.g., "en", "de")
 
 	// Logging context — populated by the caller in place.go. Optional in CLI
-	// scrapes where these fields are unknown; the ctx-bound logger still
-	// emits user_id and the user-facing job_id via .With attributes set
-	// upstream by webrunner.go.
+	// scrapes where these fields are unknown; emit helpers (see
+	// userArgsFromParams) omit user_id/job_id entirely when empty to avoid
+	// polluting per-user Grafana queries with empty-string buckets.
 	placeJobID  string
 	searchJobID string
 	placeName   string
@@ -41,6 +41,19 @@ type fetchReviewsParams struct {
 	// stripping the .With(job_id, user_id) attributes set by the webrunner.
 	userID    string
 	userJobID string
+}
+
+// userArgsFromParams returns the user_id/job_id args for a fetchReviewsParams,
+// omitting any empty values. See userArgs in place.go for rationale.
+func userArgsFromParams(p *fetchReviewsParams) []any {
+	args := make([]any, 0, 4)
+	if p.userJobID != "" {
+		args = append(args, "job_id", p.userJobID)
+	}
+	if p.userID != "" {
+		args = append(args, "user_id", p.userID)
+	}
+	return args
 }
 
 type fetchReviewsResponse struct {
@@ -83,9 +96,8 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 
 	reviewURL, err := f.generateURL(f.params.mapURL, "", pageSize, requestIDForSession)
 	if err != nil {
-		scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed",
-			"job_id", f.params.userJobID,
-			"user_id", f.params.userID,
+		args := userArgsFromParams(&f.params)
+		args = append(args,
 			"place_job_id", f.params.placeJobID,
 			"search_job_id", f.params.searchJobID,
 			"place_url", f.params.mapURL,
@@ -93,6 +105,7 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 			"next_page_token", "",
 			"error", err,
 		)
+		scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed", args...)
 		return fetchReviewsResponse{}, fmt.Errorf("failed to generate initial URL: %v", err)
 	}
 
@@ -141,9 +154,8 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 
 		reviewURL, err = f.generateURL(f.params.mapURL, nextPageToken, currentPageSize, requestIDForSession)
 		if err != nil {
-			scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed",
-				"job_id", f.params.userJobID,
-				"user_id", f.params.userID,
+			args := userArgsFromParams(&f.params)
+			args = append(args,
 				"place_job_id", f.params.placeJobID,
 				"search_job_id", f.params.searchJobID,
 				"place_url", f.params.mapURL,
@@ -151,14 +163,14 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 				"next_page_token", nextPageToken,
 				"error", err,
 			)
+			scrapemate.GetLoggerFromContext(ctx).Error("reviews_generate_url_failed", args...)
 			break
 		}
 
 		currentPageBody, err = f.fetchReviewPage(ctx, reviewURL)
 		if err != nil {
-			scrapemate.GetLoggerFromContext(ctx).Error("reviews_fetch_page_failed",
-				"job_id", f.params.userJobID,
-				"user_id", f.params.userID,
+			args := userArgsFromParams(&f.params)
+			args = append(args,
 				"place_job_id", f.params.placeJobID,
 				"search_job_id", f.params.searchJobID,
 				"place_url", f.params.mapURL,
@@ -167,6 +179,7 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 				"review_url", reviewURL,
 				"error", err,
 			)
+			scrapemate.GetLoggerFromContext(ctx).Error("reviews_fetch_page_failed", args...)
 			break
 		}
 
@@ -221,15 +234,15 @@ func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error)
 		if err == nil {
 			return body, nil
 		}
-		scrapemate.GetLoggerFromContext(ctx).Debug("authenticated_review_fetch_failed_falling_back",
-			"job_id", f.params.userJobID,
-			"user_id", f.params.userID,
+		args := userArgsFromParams(&f.params)
+		args = append(args,
 			"place_job_id", f.params.placeJobID,
 			"search_job_id", f.params.searchJobID,
 			"place_url", f.params.mapURL,
 			"place_name", f.params.placeName,
 			"error", err,
 		)
+		scrapemate.GetLoggerFromContext(ctx).Debug("authenticated_review_fetch_failed_falling_back", args...)
 	}
 
 	// Fallback to unauthenticated stealth fetch

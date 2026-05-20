@@ -1,10 +1,15 @@
 package gmaps
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
+
+	"github.com/gosom/google-maps-scraper/pkg/logger"
+	"github.com/gosom/scrapemate"
 )
 
 // TestExtractJSONPartialAccepted_LogContext verifies that when extractJSON
@@ -210,5 +215,45 @@ func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEmitHelpersOmitEmptyUserContext verifies the conditional-emit
+// contract: when a PlaceJob has empty UserID and UserJobID (the CLI /
+// standalone case), the emit helper does NOT contribute its own
+// empty-string args. This prevents user_id="" from polluting per-user
+// Grafana alert buckets when CLI traffic spikes.
+//
+// Uses a bare capture logger (no .With attrs) so the only path that could
+// inject "user_id" / "job_id" is the helper itself.
+func TestEmitHelpersOmitEmptyUserContext(t *testing.T) {
+	buf := &bytes.Buffer{}
+	base := slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctxBare := scrapemate.ContextWithLogger(context.Background(), logger.NewSlogAdapter(base))
+
+	// Simulate CLI run: UserID and UserJobID NOT set on PlaceJob.
+	pj := &PlaceJob{}
+	pj.ID = "PLACE-JOB-CLI"
+	pj.ParentID = "SEARCH-JOB-CLI"
+	pj.URL = "https://www.google.com/maps/place/CLI"
+
+	emitReviewExtractionFailed(ctxBare, pj, errors.New("simulated"))
+
+	recs := decodeLogLines(t, buf)
+	if len(recs) != 1 {
+		t.Fatalf("want 1 record, got %d", len(recs))
+	}
+	r := recs[0]
+	if _, ok := r["user_id"]; ok {
+		t.Errorf("user_id should be omitted when PlaceJob.UserID is empty, got %v", r["user_id"])
+	}
+	if _, ok := r["job_id"]; ok {
+		t.Errorf("job_id should be omitted when PlaceJob.UserJobID is empty, got %v", r["job_id"])
+	}
+	// Other fields should still be present.
+	for _, k := range []string{"place_job_id", "search_job_id", "place_url", "error"} {
+		if _, ok := r[k]; !ok {
+			t.Errorf("missing required field %q in CLI-mode emit", k)
+		}
 	}
 }

@@ -21,14 +21,18 @@ All review-path log events include these fields. JSON key names exactly as they 
 
 | Field | Type | What it contains | Source | Stable across retries? |
 |---|---|---|---|---|
-| `job_id` | string (UUID) | User-facing job ID — the row in `jobs` the customer sees in the UI | ctx With-attribute set by the runner before the scrape starts | Yes — same UUID for all retries of the same customer job |
-| `user_id` | string | Clerk user ID (e.g. `user_36Xabc123`) | ctx With-attribute, populated from the authenticated session when the job is enqueued | Yes |
+| `job_id` | string (UUID) | User-facing job ID — the row in `jobs` the customer sees in the UI | Struct field `PlaceJob.UserJobID`, passed as a field arg by emit helpers in `gmaps/place.go`, `gmaps/reviews.go`, and `gmaps/entry.go`. Populated by `runner/webrunner/webrunner.go` via `WithPlaceJobUserContext` (propagated from `SeedJobConfig.UserJobID = job.ID`). NOT inherited from ctx — scrapemate's `DoJob` replaces the ctx logger per job, stripping any With-attributes set upstream. | Yes — same UUID for all retries of the same customer job |
+| `user_id` | string | Clerk user ID (e.g. `user_36Xabc123`) | Struct field `PlaceJob.UserID`, passed as a field arg by emit helpers. Populated by the webrunner from the authenticated session when the job is enqueued. Same ctx-replacement caveat as `job_id`. | Yes |
 | `place_job_id` | string (UUID) | Scraper-internal `PlaceJob.ID` — one per place being scraped | Passed as a field arg at the call site | No — a re-scrape generates a fresh UUID |
 | `search_job_id` | string (UUID) | Scraper-internal `GmapJob.ID` — the parent search that spawned this place | Passed as a field arg at the call site | No — same caveat as above |
 | `place_url` | string | Full Google Maps URL for the place being scraped | Helper arg | Stable for the same physical place across jobs |
 | `place_name` | string | Display name of the place as returned by Google | Parsed from page; present on events where the name is already resolved | Stable for the same place |
 | `error` | string | Wrapped error message | Direct field at call site | — |
 | `reason` | string | Human-readable fallback category | Direct field at call site | — |
+
+**Scope:** Only the review-path emit helpers (the events catalogued in §2) carry `user_id` / `job_id`. Scrapemate-internal lifecycle lines (`starting job`, `job finished`, retry/backoff logs) do NOT carry these fields — they originate from scrapemate's own `s.log` and only carry the scrapemate-internal `jobid` attribute. Use webrunner lifecycle logs (`job_picked_up`, `job_scrape_succeeded`, etc.) for that cross-correlation.
+
+**CLI / standalone scrapes:** `PlaceJob.UserID` and `PlaceJob.UserJobID` are empty in CLI / databaserunner / filerunner / lambda runs. Emit helpers omit the `user_id` and `job_id` keys entirely in that case (see `userArgs` in `gmaps/place.go`) to avoid polluting per-user Grafana alert buckets with empty-string keys.
 
 **Customer-support workflow:** filter by `user_id` to see all of a customer's jobs, then narrow with `job_id` for a specific job. `place_job_id` and `search_job_id` are scraper-internal IDs useful only for cross-referencing within a single scrape run — they are not shown in the UI and have no meaning to the customer.
 

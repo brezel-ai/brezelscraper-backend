@@ -281,9 +281,8 @@ func (e *Entry) AddExtraReviews(ctx context.Context, j *PlaceJob, pages [][]byte
 	for i, page := range pages {
 		reviews, err := extractReviews(page)
 		if err != nil {
-			scrapemate.GetLoggerFromContext(ctx).Warn("review_page_parse_failed",
-				"job_id", j.UserJobID,
-				"user_id", j.UserID,
+			args := userArgs(j)
+			args = append(args,
 				"place_job_id", j.ID,
 				"search_job_id", j.ParentID,
 				"place_url", j.GetURL(),
@@ -292,6 +291,7 @@ func (e *Entry) AddExtraReviews(ctx context.Context, j *PlaceJob, pages [][]byte
 				"total_pages", len(pages),
 				"error", err,
 			)
+			scrapemate.GetLoggerFromContext(ctx).Warn("review_page_parse_failed", args...)
 			continue
 		}
 		e.UserReviewsExtended = append(e.UserReviewsExtended, reviews...)

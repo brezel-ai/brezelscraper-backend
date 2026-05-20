@@ -42,11 +42,15 @@ type GmapJob struct {
 
 	// UserID is the Clerk user identifier. Propagated to every PlaceJob
 	// spawned from this seed so gmaps log lines carry user context even
-	// though scrapemate replaces the ctx-bound logger per job.
+	// though scrapemate replaces the ctx-bound logger per job. Empty in
+	// CLI/standalone scrapes — emit helpers omit the "user_id" field
+	// entirely in that case to avoid polluting per-user Grafana queries.
 	UserID string
 	// UserJobID is the user-facing jobs.id from the DB. Propagated to
 	// PlaceJob.UserJobID so all gmaps log lines use the same "job_id" value
 	// that appears in webrunner lifecycle logs — enabling drill-down in Loki.
+	// Empty in CLI/standalone scrapes — emit helpers omit the "job_id"
+	// field entirely in that case.
 	UserJobID string
 }
 
