@@ -43,6 +43,36 @@ func TestExtractJSONPartialAccepted_LogContext(t *testing.T) {
 	}
 }
 
+func TestJSONExtractionFallback_LogContext(t *testing.T) {
+	ctx, buf := newCaptureLogger(t, "USER-JOB-Y", "user_TEST")
+	pj := &PlaceJob{}
+	pj.ID = "PLACE-JOB-Y"
+	pj.ParentID = "SEARCH-JOB-Y"
+	pj.URL = "https://www.google.com/maps/place/Broken"
+
+	emitJSONExtractionFallback(ctx, pj)
+	emitJSONParsingFallback(ctx, pj, errors.New("invalid json"))
+
+	recs := decodeLogLines(t, buf)
+	if len(recs) != 2 {
+		t.Fatalf("want 2 records, got %d", len(recs))
+	}
+	for i, want := range []string{"json_extraction_fallback", "json_parsing_fallback"} {
+		r := recs[i]
+		if r["msg"] != want {
+			t.Errorf("rec %d msg: got %v want %v", i, r["msg"], want)
+		}
+		for _, k := range []string{"job_id", "user_id", "place_job_id", "search_job_id", "place_url"} {
+			if _, ok := r[k]; !ok {
+				t.Errorf("rec %d missing %q", i, k)
+			}
+		}
+	}
+	if recs[1]["error"] != "invalid json" {
+		t.Errorf("error field missing or wrong: %v", recs[1]["error"])
+	}
+}
+
 func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 	cases := []struct {
 		name string

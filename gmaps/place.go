@@ -265,7 +265,7 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 	raw, ok := resp.Meta["json"].([]byte)
 	if !ok {
 		// JSON extraction failed - create minimal fallback entry
-		log.Warn("json_extraction_fallback", "job_id", j.ID, "reason", "creating minimal entry with URL only")
+		emitJSONExtractionFallback(ctx, j)
 		entry = Entry{
 			ID:          j.ParentID,
 			Link:        j.GetURL(),
@@ -283,7 +283,7 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 	parsedEntry, err := EntryFromJSON(raw)
 	if err != nil {
 		// JSON parsing failed - create minimal fallback entry
-		log.Warn("json_parsing_fallback", "job_id", j.ID, "error", err, "reason", "creating minimal entry with URL only")
+		emitJSONParsingFallback(ctx, j, err)
 		entry = Entry{
 			ID:          j.ParentID,
 			Link:        j.GetURL(),
@@ -726,6 +726,31 @@ func isCompletePlacePayload(raw []byte) bool {
 		return false
 	}
 	return len(four) >= 9
+}
+
+// emitJSONExtractionFallback fires when BrowserActions returned a response
+// with no raw JSON payload at all (resp.Meta["json"] missing). The PlaceJob
+// has already been written as a minimal Entry with just the URL.
+func emitJSONExtractionFallback(ctx context.Context, j *PlaceJob) {
+	scrapemate.GetLoggerFromContext(ctx).Warn("json_extraction_fallback",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"reason", "creating minimal entry with URL only",
+	)
+}
+
+// emitJSONParsingFallback fires when raw JSON was present but
+// EntryFromJSON failed to parse it. Minimal Entry persists with the parse
+// error in Description.
+func emitJSONParsingFallback(ctx context.Context, j *PlaceJob, err error) {
+	scrapemate.GetLoggerFromContext(ctx).Warn("json_parsing_fallback",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"error", err,
+		"reason", "creating minimal entry with URL only",
+	)
 }
 
 // emitPartialPayloadAcceptedWarning is called by extractJSON when the
