@@ -31,6 +31,68 @@ func TestReportSuccess_ResetsConsecutiveFails(t *testing.T) {
 	}
 }
 
+// TestReportSuccess_DoesNotPromoteStillCoolingEntry covers the
+// most-easily-regressed contract: ReportSuccess MUST keep the entry in
+// cooling when now < nextOK. Without this test, a future refactor
+// dropping the !now.Before(nextOK) guard would silently break cooling.
+func TestReportSuccess_DoesNotPromoteStillCoolingEntry(t *testing.T) {
+	clk := newFakeClock()
+	p, err := New([]string{"http://a"}, WithClock(clk))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Cooling with deadline in the future. isUsableLocked will refuse
+	// to hand this out, so we Acquire BEFORE flipping the state to keep
+	// the test small. The lease holds the *entry pointer, so the post-
+	// hoc state change is still observed by ReportSuccess.
+	lease, err := p.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	p.mu.Lock()
+	p.entries[0].state = stateCooling
+	p.entries[0].nextOK = clk.Now().Add(time.Hour) // far in the future
+	p.mu.Unlock()
+
+	lease.ReportSuccess()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if got := p.entries[0].state; got != stateCooling {
+		t.Errorf("state after ReportSuccess on still-cooling entry: got %s, want cooling", got)
+	}
+}
+
+// TestReportSuccess_LeavesQuarantinedUntouched verifies that ReportSuccess
+// on a quarantined entry mutates NEITHER counters NOR state. The guard
+// prevents metric corruption when multiple leases exist on the same entry
+// (race window between BlockedByTarget on one lease and Success on another).
+func TestReportSuccess_LeavesQuarantinedUntouched(t *testing.T) {
+	p, err := New([]string{"http://a"}, WithClock(newFakeClock()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	lease, _ := p.Acquire()
+	p.mu.Lock()
+	p.entries[0].state = stateQuarantined
+	p.entries[0].consecutiveFails = 7 // seed a non-zero value
+	p.mu.Unlock()
+
+	lease.ReportSuccess()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if got := p.entries[0].state; got != stateQuarantined {
+		t.Errorf("state: got %s, want quarantined", got)
+	}
+	if got := p.entries[0].totalSuccesses; got != 0 {
+		t.Errorf("totalSuccesses leaked on quarantined entry: got %d, want 0", got)
+	}
+	if got := p.entries[0].consecutiveFails; got != 7 {
+		t.Errorf("consecutiveFails reset on quarantined entry: got %d, want 7 (unchanged)", got)
+	}
+}
+
 func TestReportSuccess_PromotesCoolingToHealthy(t *testing.T) {
 	clk := newFakeClock()
 	p, err := New([]string{"http://a"}, WithClock(clk))
@@ -133,6 +195,19 @@ func TestReportFailure_BlockedByTargetJumpsToQuarantine(t *testing.T) {
 	defer p.mu.Unlock()
 	if got := p.entries[0].state; got != stateQuarantined {
 		t.Errorf("BlockedByTarget: state = %s, want quarantined", got)
+	}
+	// Counter side-effects: ReportFailure increments BOTH counters before
+	// the reason branch runs, so even an immediate-quarantine event is
+	// recorded as one failure. This is intentional — the entry has failed
+	// once, regardless of which path took it off-rotation.
+	if got := p.entries[0].consecutiveFails; got != 1 {
+		t.Errorf("consecutiveFails after BlockedByTarget: got %d, want 1", got)
+	}
+	if got := p.entries[0].cumulativeFails; got != 1 {
+		t.Errorf("cumulativeFails after BlockedByTarget: got %d, want 1", got)
+	}
+	if got := p.entries[0].lastFailureReason; got != BlockedByTarget {
+		t.Errorf("lastFailureReason: got %s, want blocked_by_target", got)
 	}
 }
 
@@ -253,9 +328,11 @@ func TestCoolDuration_ExponentialBackoffCappedAtMax(t *testing.T) {
 		{5, 2 * time.Minute},     // base * 4
 		{6, 4 * time.Minute},     // base * 8
 		{8, 16 * time.Minute},    // base * 32
-		{9, 30 * time.Minute},    // base * 64 = 32min > max → cap
-		{50, 30 * time.Minute},   // would overflow without the guard → cap
-		{1000, 30 * time.Minute}, // same
+		{9, 30 * time.Minute},    // base * 64 = 32min > max → cap (size-cap path)
+		{65, 30 * time.Minute},   // overshoot=62 — shift produces large positive → size-cap
+		{66, 30 * time.Minute},   // overshoot=63 — shift wraps sign bit → d<=0 path
+		{67, 30 * time.Minute},   // overshoot=64 — shift wraps further → d<=0 path
+		{1000, 30 * time.Minute}, // far past — same d<=0 path
 	}
 	for _, c := range cases {
 		if got := p.coolDuration(c.consecutiveFails); got != c.want {

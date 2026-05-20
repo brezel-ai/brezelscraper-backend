@@ -27,11 +27,25 @@ type Lease struct {
 //
 // Safe to call multiple times; subsequent calls are no-ops.
 func (l *Lease) ReportSuccess() {
+	// Ordering invariant: CAS BEFORE the lock. CAS-after-lock would let
+	// two callers both acquire the lock and both pass the CAS check,
+	// defeating idempotency. CAS-before-lock means only the first call
+	// reaches the mutation block; later calls return at the CAS check.
 	if !l.reported.CompareAndSwap(false, true) {
 		return
 	}
 	l.pool.mu.Lock()
 	defer l.pool.mu.Unlock()
+
+	// Quarantined entries are dead — never credit successes against them.
+	// Acquire refuses to hand out quarantined entries, but multiple leases
+	// can exist for the same entry (sequential Acquire calls) and one
+	// of them may quarantine the entry via BlockedByTarget while another
+	// is still in-flight. Without this guard the in-flight Success would
+	// silently bump totalSuccesses on a dead entry, corrupting metrics.
+	if l.e.state == stateQuarantined {
+		return
+	}
 	now := l.pool.clock.Now()
 
 	l.e.totalSuccesses++
@@ -53,11 +67,19 @@ func (l *Lease) ReportSuccess() {
 //
 // Safe to call multiple times; subsequent calls are no-ops.
 func (l *Lease) ReportFailure(reason FailureReason) {
+	// Ordering invariant: CAS BEFORE the lock — see ReportSuccess for why.
 	if !l.reported.CompareAndSwap(false, true) {
 		return
 	}
 	l.pool.mu.Lock()
 	defer l.pool.mu.Unlock()
+
+	// Quarantined entries are dead. Skip the failure-counter increments so
+	// metrics aren't churned on an entry that's already off-rotation. The
+	// state can't degrade further. See ReportSuccess for the same guard.
+	if l.e.state == stateQuarantined {
+		return
+	}
 	now := l.pool.clock.Now()
 
 	l.e.consecutiveFails++
@@ -70,6 +92,10 @@ func (l *Lease) ReportFailure(reason FailureReason) {
 	}
 
 	if l.e.cumulativeFails >= int64(l.pool.quarantineFailThreshold) {
+		// Invariant: consecutiveFails is NOT reset on quarantine. Quarantined
+		// entries are off-rotation for the process lifetime, so the value is
+		// effectively frozen. If a future recovery path is added (e.g.,
+		// operator-triggered un-quarantine), reset consecutiveFails to 0 there.
 		l.transitionLocked(stateQuarantined, now)
 		return
 	}

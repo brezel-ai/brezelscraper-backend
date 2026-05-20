@@ -106,13 +106,22 @@ func (p *Pool) Acquire() (*Lease, error) {
 // duration doubles per cooling cycle (consecutiveFails - threshold + 1)
 // up to maxCoolDuration. Capped via the overflow check so a long bad
 // streak can't overflow time.Duration (int64 ns).
+//
+// Overflow guard explained: time.Duration is int64. A left-shift by 63+
+// wraps the sign bit, yielding either zero or a negative value — the
+// `d <= 0` case catches both. A shift by a smaller amount can still
+// produce a value larger than maxCoolDuration without overflow; the
+// `d > p.maxCoolDuration` case caps those. Either way the entry cools
+// for at most maxCoolDuration. Go's shift-by-non-constant is defined
+// behavior, unlike C, but the result is implementation-bounded — the
+// guard makes the intent explicit and self-documenting.
 func (p *Pool) coolDuration(consecutiveFails int) time.Duration {
 	overshoot := consecutiveFails - p.coolingFailThreshold
 	if overshoot < 0 {
 		overshoot = 0
 	}
 	d := p.baseCoolDuration << overshoot
-	if d <= 0 || d > p.maxCoolDuration { // shift overflow → cap
+	if d <= 0 || d > p.maxCoolDuration {
 		return p.maxCoolDuration
 	}
 	return d
