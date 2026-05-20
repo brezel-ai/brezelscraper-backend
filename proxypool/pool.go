@@ -127,6 +127,45 @@ func (p *Pool) coolDuration(consecutiveFails int) time.Duration {
 	return d
 }
 
+// Stats returns a snapshot of the current pool state. Safe to call
+// concurrently with Acquire and lease reporting — the snapshot is
+// copy-on-read under p.mu.
+func (p *Pool) Stats() Stats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	s := Stats{
+		TotalProxies: len(p.entries),
+		Entries:      make([]EntryStats, 0, len(p.entries)),
+	}
+	for _, e := range p.entries {
+		switch e.state {
+		case stateHealthy:
+			s.Healthy++
+		case stateCooling:
+			s.Cooling++
+		case stateQuarantined:
+			s.Quarantined++
+		}
+		es := EntryStats{
+			Host:             HostOf(e.url),
+			State:            e.state.String(),
+			ConsecutiveFails: e.consecutiveFails,
+			CumulativeFails:  e.cumulativeFails,
+			TotalSuccesses:   e.totalSuccesses,
+			LastTransitionAt: e.lastTransitionAt,
+		}
+		if e.state == stateCooling {
+			es.NextOK = e.nextOK
+		}
+		if e.cumulativeFails > 0 {
+			es.LastFailureReason = e.lastFailureReason.String()
+		}
+		s.Entries = append(s.Entries, es)
+	}
+	return s
+}
+
 // isUsableLocked reports whether e can be handed out by Acquire. Must be
 // called with p.mu held.
 func (p *Pool) isUsableLocked(e *entry, now time.Time) bool {
