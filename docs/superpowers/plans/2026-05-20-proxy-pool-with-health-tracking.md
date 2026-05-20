@@ -119,7 +119,8 @@ type Stats struct { /* read-only snapshot */ }
 > - Task 1 → `61c14f5` (package skeleton: state.go, pool.go, options.go, pool_test.go)
 > - Task 2 → `d02e9f7` (round-robin Acquire + Lease type)
 > - Task 3 → `a571839` (skip cooling/quarantined + isUsableLocked + range-over-int)
-> Chunk 1 awaiting code review.
+> - Chunk 1 review fixes → `b7de0cc` (drop dead guard, white-box comment, cooling-expired test, cursor-wrap test)
+> - **Chunk 1 ✅ production-ready** (Sonnet reviewer verified)
 
 ### Task 1: Package skeleton and types
 
@@ -626,6 +627,11 @@ returning whatever sits at the cursor."
 ---
 
 ## Chunk 2: Lease + Failure Reporting
+
+> **Execution log:**
+> - Task 4 → `964a8d2` (Lease.ReportSuccess + Acquire returns *Lease)
+> - Tasks 5/6/7 → `becf1fe` (ReportFailure, exp-backoff coolDuration, transitionLocked, cooling-deadline reacquire, idempotency)
+> Chunk 2 awaiting code review.
 
 ### Task 4: Lease.ReportSuccess clears counters
 
