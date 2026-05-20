@@ -78,7 +78,7 @@ func New(urls []string, opts ...Option) (*Pool, error) {
 //
 // Callers MUST call exactly one of Lease.ReportSuccess or
 // Lease.ReportFailure before discarding the returned Lease.
-func (p *Pool) Acquire() (Lease, error) {
+func (p *Pool) Acquire() (*Lease, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -95,10 +95,10 @@ func (p *Pool) Acquire() (Lease, error) {
 		e := p.entries[idx]
 		if p.isUsableLocked(e, now) {
 			p.cursor = (idx + 1) % n
-			return Lease{URL: e.url, pool: p, e: e}, nil
+			return &Lease{URL: e.url, pool: p, e: e}, nil
 		}
 	}
-	return Lease{}, ErrPoolExhausted
+	return nil, ErrPoolExhausted
 }
 
 // isUsableLocked reports whether e can be handed out by Acquire. Must be
