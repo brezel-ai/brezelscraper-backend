@@ -101,6 +101,23 @@ func (p *Pool) Acquire() (*Lease, error) {
 	return nil, ErrPoolExhausted
 }
 
+// coolDuration returns the cooling deadline offset for an entry whose
+// consecutive failure count just reached the supplied value. The base
+// duration doubles per cooling cycle (consecutiveFails - threshold + 1)
+// up to maxCoolDuration. Capped via the overflow check so a long bad
+// streak can't overflow time.Duration (int64 ns).
+func (p *Pool) coolDuration(consecutiveFails int) time.Duration {
+	overshoot := consecutiveFails - p.coolingFailThreshold
+	if overshoot < 0 {
+		overshoot = 0
+	}
+	d := p.baseCoolDuration << overshoot
+	if d <= 0 || d > p.maxCoolDuration { // shift overflow → cap
+		return p.maxCoolDuration
+	}
+	return d
+}
+
 // isUsableLocked reports whether e can be handed out by Acquire. Must be
 // called with p.mu held.
 func (p *Pool) isUsableLocked(e *entry, now time.Time) bool {
