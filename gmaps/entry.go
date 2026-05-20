@@ -269,6 +269,12 @@ func (e *Entry) CsvRow() []string {
 	}
 }
 
+// AddExtraReviews parses review pages and appends successfully-parsed reviews
+// to e.UserReviewsExtended. Parse failures on individual pages are logged via
+// the ctx-bound scrapemate logger (carries place context from j: place_job_id,
+// search_job_id, place_url, plus user_id and the user-facing job_id from the
+// ctx With-attributes set in runner/webrunner/webrunner.go); the method
+// continues on error so a single corrupt page doesn't drop the entire batch.
 func (e *Entry) AddExtraReviews(ctx context.Context, j *PlaceJob, pages [][]byte) {
 	for i, page := range pages {
 		reviews, err := extractReviews(page)
