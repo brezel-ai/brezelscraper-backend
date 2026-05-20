@@ -116,15 +116,27 @@ type lifecycle struct {
 }
 
 type webrunner struct {
-	srv                 *web.Server
-	svc                 *web.Service
-	cfg                 *runner.Config
-	appCfg              *pkgconfig.Config
-	db                  *sql.DB
-	billingSvc          *billing.Service
-	concurrentLimitSvc  *webservices.ConcurrentLimitService
-	proxyURLs           []string     // upstream proxy URLs with creds; round-robin via proxyIndex
-	proxyIndex          atomic.Int64 // round-robin counter, increments per job
+	srv                *web.Server
+	svc                *web.Service
+	cfg                *runner.Config
+	appCfg             *pkgconfig.Config
+	db                 *sql.DB
+	billingSvc         *billing.Service
+	concurrentLimitSvc *webservices.ConcurrentLimitService
+	// proxyURLs is the raw upstream pool — kept for the legacy
+	// pickProxyURL fallback path (when proxyPool is nil) and for logging
+	// the pool size in proxy_assigned. Production paths go through
+	// proxyPool.
+	proxyURLs []string
+	// proxyIndex is the legacy round-robin counter used by pickProxyURL
+	// before the proxypool migration. Will be retired once all callers
+	// route through proxyPool.Acquire.
+	proxyIndex atomic.Int64
+	// proxyPool is the health-aware rotating pool introduced for
+	// per-proxy quarantine + outcome reporting. Constructed in New from
+	// cfg.Proxy.Proxies. Nil when no proxies are configured (CLI mode);
+	// scrapeJob falls back to the legacy pickProxyURL in that case.
+	proxyPool           *proxypool.Pool
 	s3Uploader          *s3uploader.Uploader
 	s3Bucket            string
 	jobFileRepo         models.JobFileRepository
@@ -427,6 +439,20 @@ func New(cfg *runner.Config, appCfg *pkgconfig.Config, logger *slog.Logger) (run
 		webhookDeliveryRepo: serverCfg.WebhookDeliveryRepo,
 		serverSecret:        serverCfg.ServerSecret,
 		logger:              logger,
+	}
+
+	// Health-aware proxy pool — replaces the naïve round-robin pickProxyURL
+	// for production scrapes. Nil when no proxies are configured (CLI mode);
+	// the legacy pickProxyURL path covers that case.
+	if len(cfg.Proxy.Proxies) > 0 {
+		pool, err := proxypool.New(cfg.Proxy.Proxies)
+		if err != nil {
+			return nil, fmt.Errorf("proxypool.New: %w", err)
+		}
+		ans.proxyPool = pool
+		slog.Info("proxy_pool_initialized",
+			slog.Int("pool_size", len(cfg.Proxy.Proxies)),
+		)
 	}
 
 	return &ans, nil
@@ -896,15 +922,81 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 	dedup := deduper.New()
 	exitMonitor := exiter.New()
 
-	// Pick the per-scrape upstream proxy assignment once (round-robin over
-	// the configured pool). Used in two places: passed to scrapemate via
-	// setupMate (browser navigation + stealth HTTP fetches), and threaded
-	// through CreateSeedJobs → GmapJob.ProxyURL → PlaceJob.ProxyURL so the
-	// cookie-authenticated review-RPC fetch in gmaps/reviews.go routes
-	// through the same proxy. Without this, that one HTTP call bypassed
-	// the proxy entirely and Google soft-rejected it from prod's datacenter
-	// IP — see gmaps/reviews.go fetchReviewsParams.proxyURL for the trace.
-	jobProxy := w.pickProxyURL()
+	// Acquire a Lease from the health-aware proxy pool. The same URL feeds
+	// both scrapemate (setupMate → WithProxies) and the seed jobs
+	// (SeedJobConfig.ProxyURL → fetchWithCookies), so the entire scrape
+	// shares one upstream identity. At job end the lease is reported as
+	// success or failure — see the defer block below.
+	//
+	// CLI mode (no proxies configured) falls through to the legacy
+	// pickProxyURL path with proxyLease==nil and no outcome reporting.
+	var (
+		proxyLease *proxypool.Lease
+		jobProxy   proxyAssignment
+	)
+	if w.proxyPool != nil {
+		lease, lerr := w.proxyPool.Acquire()
+		if lerr != nil {
+			outcome = OutcomeFailed(
+				CauseProxyPoolExhausted,
+				"Scraping aborted: every configured proxy was rejected by Google. Pool needs new IPs.",
+				lerr,
+			)
+			job.Status = outcome.Status
+			job.FailureReason = outcome.FailureReason
+			w.logger.Error("proxy_pool_exhausted",
+				slog.String("job_id", job.ID),
+				slog.String("user_id", job.UserID),
+			)
+			return outcome
+		}
+		proxyLease = lease
+		jobProxy = proxyAssignment{URL: lease.URL}
+	} else {
+		jobProxy = w.pickProxyURL()
+	}
+
+	// Panic-safe lease reporting. Closure captures jobSuccess, mateErr,
+	// reviewCircuitTripped by reference — populate them as the function
+	// progresses. The defer is the only place that knows about every
+	// exit path; the atomic-Bool guard inside the Lease makes
+	// double-reporting safe even if the surrounding code also tries.
+	var (
+		jobSuccess           bool
+		mateErr              error
+		reviewCircuitTripped bool
+	)
+	defer func() {
+		if proxyLease == nil {
+			return
+		}
+		if r := recover(); r != nil {
+			proxyLease.ReportFailure(proxypool.NetworkErr)
+			w.logger.Error("proxy_lease_reported_on_panic",
+				slog.String("job_id", job.ID),
+				slog.String("proxy_host", proxypool.HostOf(proxyLease.URL)),
+				slog.Any("panic", r),
+			)
+			panic(r) // re-raise so existing recover wrappers handle it
+		}
+		reason, fail := classifyProxyOutcome(jobSuccess, mateErr, reviewCircuitTripped)
+		if fail {
+			proxyLease.ReportFailure(reason)
+			w.logger.Info("proxy_outcome_reported",
+				slog.String("job_id", job.ID),
+				slog.String("proxy_host", proxypool.HostOf(proxyLease.URL)),
+				slog.String("outcome", "failure"),
+				slog.String("reason", reason.String()),
+			)
+			return
+		}
+		proxyLease.ReportSuccess()
+		w.logger.Info("proxy_outcome_reported",
+			slog.String("job_id", job.ID),
+			slog.String("proxy_host", proxypool.HostOf(proxyLease.URL)),
+			slog.String("outcome", "success"),
+		)
+	}()
 
 	mate, err := w.setupMate(jobCtx, outfile, job, exitMonitor, jobProxy)
 	if err != nil {
@@ -976,7 +1068,11 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		return outcome
 	}
 
-	jobSuccess := false
+	// jobSuccess is declared above (closure-captured by the proxy-lease
+	// defer). Reset to false here for the legacy/CLI path where the defer
+	// isn't installed; the production path with proxyLease already sees
+	// jobSuccess == false at this point.
+	jobSuccess = false
 
 	if len(seedJobs) > 0 {
 		exitMonitor.SetSeedCount(len(seedJobs))
@@ -1204,6 +1300,12 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		job.FailureReason = outcome.FailureReason
 		job.ResultCount = outcome.ResultCount
 		jobSuccess = outcome.Status == web.StatusCompleted
+
+		// Capture proxy-outcome inputs for the defer block at the top of
+		// scrapeJob. ReviewEmptyCount is read AFTER mate.Start returns
+		// (reading mid-scrape would be racy with reviews.go's atomic).
+		mateErr = err
+		reviewCircuitTripped = gmaps.ReviewEmptyCount() >= gmaps.ReviewCircuitBreakerThreshold()
 
 		// Operational logging that the old err-tree emitted; preserved here so
 		// Loki queries continue to work.
@@ -1505,6 +1607,31 @@ type proxyAssignment struct {
 	URL      string // empty when the proxy pool is empty
 	Index    int    // 1-based index into the pool; 0 when URL == ""
 	PoolSize int    // total proxies configured
+}
+
+// classifyProxyOutcome maps a job's terminal state into a proxypool
+// FailureReason, or returns report=false to record the lease as a
+// success.
+//
+// Today's classification is intentionally coarse — we infer the reason
+// from job-level signals because scrapemate does not surface per-request
+// proxy attribution. Refinements should add more signals here rather
+// than push complexity into the pool. See
+// docs/superpowers/plans/2026-05-20-proxy-pool-with-health-tracking.md
+// Task 13 for the rationale.
+func classifyProxyOutcome(jobSuccess bool, jobErr error, reviewCircuitTripped bool) (reason proxypool.FailureReason, report bool) {
+	switch {
+	case !jobSuccess || jobErr != nil:
+		return proxypool.NetworkErr, true
+	case reviewCircuitTripped:
+		// Cookies + proxy combination got the 33-byte stub repeatedly
+		// → Google rejected this proxy IP for the cookie-authenticated
+		// review-RPC endpoint. Classify as SoftReject so the pool cools
+		// rather than quarantines (the IP may recover).
+		return proxypool.SoftReject, true
+	default:
+		return 0, false
+	}
 }
 
 // pickProxyURL atomically rotates and returns the next upstream proxy
