@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"slices"
@@ -332,11 +331,13 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("add_extra_reviews_panic",
-					slog.String("parent_job_id", j.ParentID),
-					slog.String("entry_title", entry.Title),
-					slog.Any("panic", r),
-					slog.String("stack", string(debug.Stack())),
+				scrapemate.GetLoggerFromContext(ctx).Error("add_extra_reviews_panic",
+					"place_job_id", j.ID,
+					"search_job_id", j.ParentID,
+					"place_url", j.GetURL(),
+					"entry_title", entry.Title,
+					"panic", r,
+					"stack", string(debug.Stack()),
 				)
 			}
 		}()
@@ -541,12 +542,12 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("review_extraction_panic",
-					slog.String("job_id", j.ID),
-					slog.String("parent_job_id", j.ParentID),
-					slog.String("place_url", j.GetURL()),
-					slog.Any("panic", r),
-					slog.String("stack", string(debug.Stack())),
+				scrapemate.GetLoggerFromContext(ctx).Error("review_extraction_panic",
+					"place_job_id", j.ID,
+					"search_job_id", j.ParentID,
+					"place_url", j.GetURL(),
+					"panic", r,
+					"stack", string(debug.Stack()),
 				)
 			}
 		}()
@@ -557,13 +558,7 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 
 		// Circuit breaker: skip reviews if too many consecutive empty responses
 		if reviewEmptyCount.Load() >= reviewCircuitBreakerThreshold {
-			slog.Error("review_circuit_breaker_open",
-				slog.String("job_id", j.ID),
-				slog.String("parent_job_id", j.ParentID),
-				slog.Int("consecutive_failures", int(reviewEmptyCount.Load())),
-				slog.String("action", "skipping reviews for remaining places"),
-				slog.String("likely_cause", "cookies expired or IP rate-limited"),
-			)
+			emitReviewCircuitBreakerOpen(ctx, j)
 			return
 		}
 
@@ -592,12 +587,7 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 
 			reviewData, err := reviewFetcher.fetch(fetchCtx)
 			if err != nil {
-				slog.Warn("review_extraction_failed",
-					slog.String("job_id", j.ID),
-					slog.String("parent_job_id", j.ParentID),
-					slog.String("place_url", j.GetURL()),
-					slog.Any("error", err),
-				)
+				emitReviewExtractionFailed(ctx, j, err)
 				return
 			}
 
@@ -609,15 +599,7 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 					responseBytes = len(reviewData.pages[0])
 				}
 				count := reviewEmptyCount.Add(1)
-				slog.Warn("review_api_empty_response",
-					slog.String("job_id", j.ID),
-					slog.String("parent_job_id", j.ParentID),
-					slog.String("place_url", j.GetURL()),
-					slog.Int("review_count_on_page", reviewCount),
-					slog.Int("response_bytes", responseBytes),
-					slog.Int("consecutive_empty", int(count)),
-					slog.String("possible_cause", "expired cookies, IP blocked, or rate limited"),
-				)
+				emitReviewAPIEmptyResponse(ctx, j, reviewCount, responseBytes, int(count))
 				return
 			}
 
@@ -730,6 +712,43 @@ func emitPartialPayloadAcceptedWarning(ctx context.Context, j *PlaceJob, bytes i
 		"place_url", j.GetURL(),
 		"bytes", bytes,
 		"detail", "APP_INITIALIZATION_STATE never fully hydrated within 15×200ms; review_count and reviews_per_rating will be empty",
+	)
+}
+
+// emitReviewCircuitBreakerOpen is called when reviewEmptyCount reaches the
+// threshold and review extraction is skipped for this place.
+func emitReviewCircuitBreakerOpen(ctx context.Context, j *PlaceJob) {
+	scrapemate.GetLoggerFromContext(ctx).Error("review_circuit_breaker_open",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"consecutive_failures", int(reviewEmptyCount.Load()),
+		"action", "skipping reviews for remaining places",
+		"likely_cause", "cookies expired or IP rate-limited",
+	)
+}
+
+// emitReviewExtractionFailed is called when the review fetcher returns an error.
+func emitReviewExtractionFailed(ctx context.Context, j *PlaceJob, err error) {
+	scrapemate.GetLoggerFromContext(ctx).Warn("review_extraction_failed",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"error", err.Error(),
+	)
+}
+
+// emitReviewAPIEmptyResponse is called when Google returns HTTP 200 with empty
+// review data (silent failure indicating expired cookies or IP block).
+func emitReviewAPIEmptyResponse(ctx context.Context, j *PlaceJob, reviewCountOnPage, responseBytes, consecutiveEmpty int) {
+	scrapemate.GetLoggerFromContext(ctx).Warn("review_api_empty_response",
+		"place_job_id", j.ID,
+		"search_job_id", j.ParentID,
+		"place_url", j.GetURL(),
+		"review_count_on_page", reviewCountOnPage,
+		"response_bytes", responseBytes,
+		"consecutive_empty", consecutiveEmpty,
+		"possible_cause", "expired cookies, IP blocked, or rate limited",
 	)
 }
 

@@ -1,6 +1,8 @@
 package gmaps
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -38,5 +40,59 @@ func TestExtractJSONPartialAccepted_LogContext(t *testing.T) {
 	}
 	if !strings.Contains(r["place_url"].(string), "/maps/place/Test") {
 		t.Errorf("place_url not propagated: %v", r["place_url"])
+	}
+}
+
+func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
+	cases := []struct {
+		name string
+		emit func(ctx context.Context, j *PlaceJob)
+		want string // expected "msg" field
+	}{
+		{
+			name: "circuit_breaker_open",
+			emit: emitReviewCircuitBreakerOpen,
+			want: "review_circuit_breaker_open",
+		},
+		{
+			name: "extraction_failed",
+			emit: func(ctx context.Context, j *PlaceJob) {
+				emitReviewExtractionFailed(ctx, j, errors.New("simulated failure"))
+			},
+			want: "review_extraction_failed",
+		},
+		{
+			name: "api_empty_response",
+			emit: func(ctx context.Context, j *PlaceJob) {
+				emitReviewAPIEmptyResponse(ctx, j, 271, 33, 1)
+			},
+			want: "review_api_empty_response",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, buf := newCaptureLogger(t, "USER-JOB-1", "user_TEST")
+			pj := &PlaceJob{}
+			pj.ID = "PLACE-JOB-1"
+			pj.ParentID = "SEARCH-JOB-1"
+			pj.URL = "https://www.google.com/maps/place/Test"
+
+			tc.emit(ctx, pj)
+
+			recs := decodeLogLines(t, buf)
+			if len(recs) != 1 {
+				t.Fatalf("want 1 record, got %d", len(recs))
+			}
+			r := recs[0]
+			if r["msg"] != tc.want {
+				t.Errorf("msg: got %v want %v", r["msg"], tc.want)
+			}
+			for _, k := range []string{"job_id", "user_id", "place_job_id", "search_job_id", "place_url"} {
+				if _, ok := r[k]; !ok {
+					t.Errorf("missing %q in %s", k, tc.want)
+				}
+			}
+		})
 	}
 }
