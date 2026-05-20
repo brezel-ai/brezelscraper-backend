@@ -70,9 +70,9 @@ Events are ordered roughly by increasing severity / operational impact.
 
 **Fires when:** The browser actions returned no raw JSON at all for a place; a minimal entry (name/URL only) was persisted.
 
-**On-call action:** Check `reason`. If `reason="timeout"` is widespread, the extract-JSON timing budget may need increasing. If `reason="element_not_found"`, Google may have changed the page structure.
+**On-call action:** `reason` is always the static string `"creating minimal entry with URL only"` (informational only — do not filter on it to diagnose the cause). Inspect `error` for the actual failure cause. If `error` shows a widespread timeout pattern, the extract-JSON timing budget may need increasing. If `error` indicates a missing DOM element, Google may have changed the page structure.
 
-**Extra fields:** `place_job_id`, `search_job_id`, `place_url`, `reason`
+**Extra fields:** `place_job_id`, `search_job_id`, `place_url`, `error`, `reason`
 
 ---
 
@@ -82,7 +82,7 @@ Events are ordered roughly by increasing severity / operational impact.
 
 **Fires when:** Raw JSON was present on the page but `EntryFromJSON` failed to parse it; a minimal entry was persisted.
 
-**On-call action:** Check `error` for the parse failure. If this fires for many places in the same job, a Google JSON schema change has likely broken the parser — escalate immediately.
+**On-call action:** Check `error` for the parse failure — that is where the actual failure cause is recorded. `reason` is always the static string `"creating minimal entry with URL only"` (identical to `json_extraction_fallback`; informational only). If this fires for many places in the same job, a Google JSON schema change has likely broken the parser — escalate immediately.
 
 **Extra fields:** `place_job_id`, `search_job_id`, `place_url`, `error`, `reason`
 
@@ -104,7 +104,7 @@ Events are ordered roughly by increasing severity / operational impact.
 
 **Level:** WARN
 
-**Fires when:** The parsed `Entry` has `rating > 0` but `review_count == 0` — a known Google JSON shape-change canary that indicates the corruption pattern described in PR #79.
+**Fires when:** The parsed `Entry` has `rating > 0` but `review_count == 0` — catches the corruption pattern where a place ends up stored with rating>0 but review_count=0, which is impossible for a legitimate Google Maps place. Fires when the parsed Entry violates this invariant.
 
 **On-call action:** Any occurrence is a signal that Google has changed the review-count field path. Pull the `place_url` and verify manually. File a developer task to update the JSON parser. Check whether rows in the DB already have corrupted `review_count = 0` alongside non-zero ratings.
 
@@ -190,7 +190,7 @@ Events are ordered roughly by increasing severity / operational impact.
 
 **Fires when:** 3 consecutive empty review-API responses were observed; the circuit breaker tripped and review extraction is now skipped for all remaining places in this worker process.
 
-**On-call action:** **High urgency.** The `action` field will say `skipping_reviews`. All subsequent places in the same process produce zero reviews until the binary restarts — the breaker is process-global. Check `likely_cause` (typically `cookies_expired` or `rate_limited`). Immediately rotate cookies and restart the backend container. If restarting is not feasible, cancel the running job from the admin panel to stop further empty-review writes.
+**On-call action:** **High urgency.** The `action` field is always the literal string `"skipping reviews for remaining places"` (hardcoded — do not filter with `action="skipping_reviews"`, that will return zero results). All subsequent places in the same process produce zero reviews until the binary restarts — the breaker is process-global. The `likely_cause` field is always the literal string `"cookies expired or IP rate-limited"` (hardcoded diagnostic string, not an enum). Immediately rotate cookies and restart the backend container. If restarting is not feasible, cancel the running job from the admin panel to stop further empty-review writes.
 
 **Extra fields:** `place_job_id`, `search_job_id`, `place_url`, `consecutive_failures`, `action`, `likely_cause`
 
@@ -253,6 +253,8 @@ sum (rate({service="backend"} | json | msg="extract_json_partial_payload_accepte
 
 Interpretation: fraction of completed scrapes where at least one place hit the partial-payload fallback. Expected baseline near 0. A sustained value above ~10% means either Google has slowed place-detail hydration or the timing budget (`maxAttempts × delay`) is too tight — raise `maxAttempts` or per-attempt delay before considering other fixes.
 
+Note: `job_scrape_succeeded` fires even on partial failures; the ratio is approximate but trending is what matters.
+
 ---
 
 ### (e) Circuit-breaker open events — cookies / IP / rate-limit
@@ -292,7 +294,7 @@ count_over_time({service="backend"} | json | msg="place_payload_inconsistent_rev
 
 **Severity:** PAGE
 
-**Rationale:** This event is the primary canary for the corruption pattern (PR #79). Even a single occurrence in 5 minutes is worth waking someone up — the entire affected job's `review_count` data is suspect, and the pattern tends to be systematic once Google changes the shape. False-positive rate is effectively zero.
+**Rationale:** This event is the primary canary for the corruption pattern (rating>0 but review_count=0). Even a single occurrence in 5 minutes is worth waking someone up — the entire affected job's `review_count` data is suspect, and the pattern tends to be systematic once Google changes the shape. False-positive rate is effectively zero.
 
 ---
 
