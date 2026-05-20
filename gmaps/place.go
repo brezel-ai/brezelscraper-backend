@@ -734,7 +734,7 @@ func emitReviewExtractionFailed(ctx context.Context, j *PlaceJob, err error) {
 		"place_job_id", j.ID,
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
-		"error", err.Error(),
+		"error", err,
 	)
 }
 
