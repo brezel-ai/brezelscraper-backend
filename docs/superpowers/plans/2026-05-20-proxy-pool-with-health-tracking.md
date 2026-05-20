@@ -1513,6 +1513,13 @@ entry mutations across the lock boundary."
 
 ## Chunk 4: Webrunner Integration
 
+> **Execution log:**
+> - Task 11 → `4ebcd12` (export ReviewEmptyCount + ReviewCircuitBreakerThreshold from gmaps)
+> - Tasks 12/13 → `58fe8ac` (proxypool.Pool wired into scrapeJob; panic-safe lease reporting via defer; classifyProxyOutcome helper; CauseProxyPoolExhausted)
+> - Task 14 → `e2b1daf` (/internal/proxy/stats HTTP handler via web.ServerConfig.InternalHandlers extension point; 503 on nil pool; credential-stripped JSON)
+> - Task 15 → `a3dd2b4` (two end-to-end tests: 50-scrape mixed-outcome simulation + cooled-pool recovery)
+> Chunk 4 awaiting code review.
+
 ### Task 11: Expose ReviewEmptyCount from gmaps
 
 The webrunner needs a way to ask, at job end, "did the review circuit breaker trip during this job?" — that's the signal for classifying the proxy outcome as `SoftReject`. The package-level `reviewEmptyCount` already exists; we just need an exported reader.
