@@ -91,6 +91,12 @@ type ServerConfig struct {
 	// AllowedOrigins is read once from pkg/config at startup. Eliminates
 	// the direct os.Getenv("ALLOWED_ORIGINS") call inside web.New.
 	AllowedOrigins []string
+	// InternalHandlers is an extension point for the internal listener.
+	// Callers populate this with diagnostic endpoints they want exposed on
+	// 9090 (alongside /health and /metrics). The webrunner registers
+	// /internal/proxy/stats through here so web.go doesn't need to import
+	// proxypool — keeps web/ free of scraping-internal coupling.
+	InternalHandlers map[string]http.Handler
 }
 
 func New(cfg ServerConfig) (*Server, error) {
@@ -215,6 +221,15 @@ func New(cfg ServerConfig) (*Server, error) {
 		internalMux := http.NewServeMux()
 		internalMux.Handle("/metrics", promhttp.Handler())
 		internalMux.HandleFunc("/health", hg.Web.HealthCheck)
+		// Register caller-supplied diagnostic handlers (e.g. proxy pool
+		// stats from webrunner). Skips empty/nil entries so a nil map or
+		// zero-value Config still works.
+		for path, h := range cfg.InternalHandlers {
+			if path == "" || h == nil {
+				continue
+			}
+			internalMux.Handle(path, h)
+		}
 		ans.internalSrv = &http.Server{
 			Addr:              cfg.InternalAddr,
 			Handler:           internalMux,

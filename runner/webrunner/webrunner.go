@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -305,6 +306,28 @@ func New(cfg *runner.Config, appCfg *pkgconfig.Config, logger *slog.Logger) (run
 		return nil, err
 	}
 
+	// Health-aware proxy pool — initialized BEFORE web.New so the /internal/
+	// proxy/stats handler can be registered via serverCfg.InternalHandlers.
+	// Nil when no proxies are configured (CLI mode); the legacy
+	// pickProxyURL path in scrapeJob covers that case.
+	var proxyPool *proxypool.Pool
+	if len(cfg.Proxy.Proxies) > 0 {
+		proxyPool, err = proxypool.New(cfg.Proxy.Proxies)
+		if err != nil {
+			return nil, fmt.Errorf("proxypool.New: %w", err)
+		}
+		slog.Info("proxy_pool_initialized",
+			slog.Int("pool_size", len(cfg.Proxy.Proxies)),
+		)
+		// Register the internal stats handler. The handler closes over the
+		// pool; web.go iterates serverCfg.InternalHandlers when binding the
+		// internal mux. Keeps web/ free of any proxypool import.
+		if serverCfg.InternalHandlers == nil {
+			serverCfg.InternalHandlers = make(map[string]http.Handler)
+		}
+		serverCfg.InternalHandlers["/internal/proxy/stats"] = newProxyStatsHandler(proxyPool, logger)
+	}
+
 	// Create web server
 	srv, err := web.New(serverCfg)
 	if err != nil {
@@ -439,20 +462,11 @@ func New(cfg *runner.Config, appCfg *pkgconfig.Config, logger *slog.Logger) (run
 		webhookDeliveryRepo: serverCfg.WebhookDeliveryRepo,
 		serverSecret:        serverCfg.ServerSecret,
 		logger:              logger,
-	}
-
-	// Health-aware proxy pool — replaces the naïve round-robin pickProxyURL
-	// for production scrapes. Nil when no proxies are configured (CLI mode);
-	// the legacy pickProxyURL path covers that case.
-	if len(cfg.Proxy.Proxies) > 0 {
-		pool, err := proxypool.New(cfg.Proxy.Proxies)
-		if err != nil {
-			return nil, fmt.Errorf("proxypool.New: %w", err)
-		}
-		ans.proxyPool = pool
-		slog.Info("proxy_pool_initialized",
-			slog.Int("pool_size", len(cfg.Proxy.Proxies)),
-		)
+		// proxyPool was constructed earlier (before web.New) so the
+		// /internal/proxy/stats handler could close over it. Nil for
+		// CLI mode (no proxies configured); scrapeJob falls back to
+		// the legacy pickProxyURL in that case.
+		proxyPool: proxyPool,
 	}
 
 	return &ans, nil
