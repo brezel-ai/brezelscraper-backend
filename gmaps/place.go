@@ -627,7 +627,14 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 				proxyURL:    j.ProxyURL,
 			}
 
-			reviewFetcher := newReviewFetcher(params)
+			reviewFetcher, err := newReviewFetcher(params)
+			if err != nil {
+				// Bad proxy URL or other init failure. Skip reviews for this
+				// place but let the rest of the place data persist — matches
+				// the existing "fail open" stance of the review pipeline.
+				emitReviewExtractionFailed(ctx, j, err)
+				return
+			}
 
 			// Bug B fix: detach from parent ctx cancellation but cap with
 			// a local budget. When the ExitMonitor cancels mateCtx after

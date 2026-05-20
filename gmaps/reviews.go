@@ -71,17 +71,25 @@ type fetchReviewsResponse struct {
 
 type fetcher struct {
 	httpClient scrapemate.HTTPFetcher
-	params     fetchReviewsParams
+	// cookieFetchClient is the *http.Client used by fetchWithCookies for every
+	// paginated review-page request. Built once in newReviewFetcher and reused
+	// across all f.fetch() pages so the connection pool (which lives on
+	// http.Transport, not http.Client) actually pools — without this, every
+	// page costs a fresh TCP + TLS + proxy CONNECT handshake.
+	cookieFetchClient *http.Client
+	params            fetchReviewsParams
 }
 
-func newReviewFetcher(params fetchReviewsParams) *fetcher {
-	netClient := stealth.New("firefox", nil)
-	ans := fetcher{
-		params:     params,
-		httpClient: netClient,
+func newReviewFetcher(params fetchReviewsParams) (*fetcher, error) {
+	cookieClient, err := newCookieFetchClient(params.proxyURL)
+	if err != nil {
+		return nil, err
 	}
-
-	return &ans
+	return &fetcher{
+		params:            params,
+		httpClient:        stealth.New("firefox", nil),
+		cookieFetchClient: cookieClient,
+	}, nil
 }
 
 func (f *fetcher) langForURL() string {
@@ -238,9 +246,12 @@ func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID 
 
 func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error) {
 	// Try authenticated fetch with Google cookies (bypasses restricted view).
-	// Routes through f.params.proxyURL when non-empty — see fetchReviewsParams.proxyURL.
+	// Reuses f.cookieFetchClient which was built once per fetcher in
+	// newReviewFetcher — so paginated review-page requests share a single
+	// connection pool. The client's transport is pinned to f.params.proxyURL
+	// when non-empty (see fetchReviewsParams.proxyURL).
 	if cookieHeader := GetCookieHeader(); cookieHeader != "" {
-		body, err := fetchWithCookies(ctx, u, cookieHeader, f.params.proxyURL)
+		body, err := fetchWithCookies(ctx, u, cookieHeader, f.cookieFetchClient)
 		if err == nil {
 			return body, nil
 		}
@@ -274,18 +285,16 @@ func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error)
 	return resp.Body, nil
 }
 
-// fetchWithCookies performs an HTTP GET with Google auth cookies using net/http.
-// When proxyURL is non-empty, the request is routed through that upstream HTTP
-// proxy. This matters because Google's /maps/rpc/listugcposts soft-rejects
-// requests from datacenter IPs even with valid cookies — the fix is to route
-// the authenticated fetch through the same residential/mobile proxy already
-// used for browser navigation. See fetchReviewsParams.proxyURL for context.
-func fetchWithCookies(ctx context.Context, u string, cookieHeader string, proxyURL string) ([]byte, error) {
-	client, err := newCookieFetchClient(proxyURL)
-	if err != nil {
-		return nil, err
-	}
-
+// fetchWithCookies performs an HTTP GET with Google auth cookies using the
+// supplied *http.Client. The client carries the per-scrape proxy configuration
+// (pinned via newCookieFetchClient) and a shared connection pool that survives
+// across paginated review-page fetches — see fetcher.cookieFetchClient.
+//
+// Routing through a proxy matters because Google's /maps/rpc/listugcposts
+// soft-rejects requests from datacenter IPs even with valid cookies; the fix
+// is to share the upstream identity that browser navigation already uses.
+// See fetchReviewsParams.proxyURL for the byte-level reproduction.
+func fetchWithCookies(ctx context.Context, u string, cookieHeader string, client *http.Client) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
@@ -314,25 +323,37 @@ func fetchWithCookies(ctx context.Context, u string, cookieHeader string, proxyU
 	return body, nil
 }
 
-// newCookieFetchClient builds the *http.Client used by fetchWithCookies. When
-// proxyURL is empty, the returned client has the zero-value Transport
-// (equivalent to the prior behavior — direct egress, respects HTTPS_PROXY env
-// as a fallback). When proxyURL is non-empty, the transport is pinned to that
-// proxy and the env var is ignored, so we never accidentally bypass the
-// per-scrape rotated proxy that webrunner already selected for this job.
+// newCookieFetchClient builds the *http.Client used by fetchWithCookies.
 //
-// Factored out so unit tests can exercise the proxy plumbing without firing
-// real HTTP traffic — see TestNewCookieFetchClient_PinsProxy.
+// When proxyURL is empty, returns a client with NIL Transport, which causes
+// net/http to fall back to the package-global http.DefaultTransport. That
+// transport is (a) shared/pooled across the whole process and (b) configured
+// with Proxy: http.ProxyFromEnvironment, so HTTPS_PROXY / HTTP_PROXY /
+// NO_PROXY env vars are honored. This preserves the pre-fix behavior verbatim
+// for CLI/standalone use and ensures no accidental loss of connection reuse.
+//
+// When proxyURL is non-empty, the client owns an explicit *http.Transport with
+// Proxy pinned to that URL. Env vars are NOT consulted — we never want the
+// per-scrape rotated proxy that webrunner already selected to be silently
+// overridden by an OS-level setting.
+//
+// The returned client is intended to be held on a fetcher for its lifetime
+// and reused across every paginated review-page request — do NOT rebuild
+// per call, or the connection pool (which lives on the Transport) is thrown
+// away each time.
 func newCookieFetchClient(proxyURL string) (*http.Client, error) {
-	transport := &http.Transport{}
-	if proxyURL != "" {
-		pu, err := url.Parse(proxyURL)
-		if err != nil {
-			return nil, fmt.Errorf("parse proxy URL: %w", err)
-		}
-		transport.Proxy = http.ProxyURL(pu)
+	if proxyURL == "" {
+		// nil Transport → http.DefaultTransport (shared pool, env-aware).
+		return &http.Client{Timeout: 30 * time.Second}, nil
 	}
-	return &http.Client{Timeout: 30 * time.Second, Transport: transport}, nil
+	pu, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy URL: %w", err)
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{Proxy: http.ProxyURL(pu)},
+	}, nil
 }
 
 // proxyHostForLog returns a credential-free host:port suitable for log fields.
