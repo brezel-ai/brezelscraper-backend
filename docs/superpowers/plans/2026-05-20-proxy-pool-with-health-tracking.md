@@ -1153,6 +1153,13 @@ git commit -m "test(proxypool): lock in Lease report idempotency"
 
 ## Chunk 3: Stats, hostOf consolidation, Concurrency
 
+> **Execution log:**
+> - Task 8 → `e49ffc7` (Stats() + exported HostOf + json omitzero on time.Time)
+> - Task 8b → `6f43b56` (deleted gmaps + webrunner proxyHostForLog dupes; callers use cmp.Or(proxypool.HostOf, "direct"); fixed pre-existing webrunner doc-comment-orphan)
+> - Task 9 → no-op (persistence seam was already documented in Task 1)
+> - Task 10 → `425bf39` (concurrent + burnout + full-exhaustion tests; 22 tests total under -race)
+> Chunk 3 awaiting code review.
+
 ### Task 8: Stats() snapshot
 
 **Files:**
