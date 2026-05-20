@@ -51,6 +51,25 @@ func ResetReviewCircuitBreaker() {
 	reviewEmptyCount.Store(0)
 }
 
+// ReviewEmptyCount returns the current value of the per-job review
+// empty-response counter. Used by the webrunner at job end to decide
+// whether to classify the assigned proxy as SoftReject — see the proxy
+// pool integration in docs/superpowers/plans/2026-05-20-proxy-pool-with-health-tracking.md
+//
+// Callers should read this only AFTER mate.Start has returned; reading
+// during a scrape gives a racy mid-scrape view.
+func ReviewEmptyCount() int32 {
+	return reviewEmptyCount.Load()
+}
+
+// ReviewCircuitBreakerThreshold returns the empty-response count that
+// trips the review circuit breaker. Stable across the process lifetime.
+// Exposed so callers can compare against ReviewEmptyCount() at job end
+// without hardcoding the threshold.
+func ReviewCircuitBreakerThreshold() int32 {
+	return reviewCircuitBreakerThreshold
+}
+
 type PlaceJobOptions func(*PlaceJob)
 
 type PlaceJob struct {
