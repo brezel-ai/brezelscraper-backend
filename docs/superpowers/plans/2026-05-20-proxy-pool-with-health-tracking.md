@@ -115,6 +115,12 @@ type Stats struct { /* read-only snapshot */ }
 
 ## Chunk 1: Pool Foundation (state machine + round-robin)
 
+> **Execution log:** Branch `feat/proxy-pool-with-health-tracking` off develop `f2a8064`. Plan committed `4f784eb`.
+> - Task 1 → `61c14f5` (package skeleton: state.go, pool.go, options.go, pool_test.go)
+> - Task 2 → `d02e9f7` (round-robin Acquire + Lease type)
+> - Task 3 → `a571839` (skip cooling/quarantined + isUsableLocked + range-over-int)
+> Chunk 1 awaiting code review.
+
 ### Task 1: Package skeleton and types
 
 **Files:**
