@@ -1520,6 +1520,12 @@ entry mutations across the lock boundary."
 > - Task 15 → `a3dd2b4` (two end-to-end tests: 50-scrape mixed-outcome simulation + cooled-pool recovery)
 > - Chunk 4 review fixes → `ce90c62` (mateErr shadowing on forcedCompletionCh path FIXED — was a real classification bug; proxyAttempted gate; double-reset cleanup; classifyProxyOutcome default → NetworkErr; InternalHandlers uniqueness comment; cross-job reviewEmptyCount race documented as known limitation, follow-up tracked)
 > - **Chunk 4 ✅ production-ready** (Sonnet reviewer verified)
+>
+> **Master code review** (PR #83, 5 parallel Sonnet reviewers via superpowers:code-review skill):
+> - Master review fixes → `37ef9ac` — TWO critical bugs caught and fixed:
+>   - `classifyProxyOutcome` was treating `context.Canceled` from `mate.Start`'s natural success-path termination as a job error, which would have cooled every healthy proxy after 3 successful scrapes. Mirrors the same disambiguation `classifyOutcome` already does via `naturalCompletion`.
+>   - `newCookieFetchClient` wrapped `*url.Error` which embeds the full proxy URL including userinfo — credential leak into Loki on any malformed URL.
+> - **Master review ✅ production-ready** (only 2 of 14 findings met 80+ confidence; both fixed)
 
 ### Task 11: Expose ReviewEmptyCount from gmaps
 
@@ -2034,6 +2040,11 @@ Two realistic scenarios:
 ---
 
 ## Chunk 5: Final Wiring, Verification, PR
+
+> **Execution log:**
+> - PR opened: https://github.com/brezel-ai/brezelscraper-backend/pull/83 (`feat/proxy-pool-with-health-tracking` → `develop`)
+> - Smoke-test runbook → `docs/observability/proxy-pool-smoke-test.md`
+> - **Chunk 5 ✅ ready** — PR open, master review passed, smoke runbook documented; awaiting operator-run smoke test before merge
 
 ### Task 16: End-to-end smoke test (manual)
 
