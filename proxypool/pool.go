@@ -69,9 +69,12 @@ func New(urls []string, opts ...Option) (*Pool, error) {
 	return p, nil
 }
 
-// Acquire returns a Lease for the next available proxy in round-robin
-// order. At this stage it does NOT skip cooling/quarantined entries —
-// that lands in Task 3.
+// Acquire returns a Lease for the next healthy proxy in round-robin order,
+// skipping cooling and quarantined entries. A cooling entry whose nextOK
+// has passed is treated as healthy for selection purposes (lazy promotion
+// happens when the lease is reported successful — see Lease.ReportSuccess).
+//
+// Returns ErrPoolExhausted when no entry is available.
 //
 // Callers MUST call exactly one of Lease.ReportSuccess or
 // Lease.ReportFailure before discarding the returned Lease.
@@ -83,9 +86,31 @@ func (p *Pool) Acquire() (Lease, error) {
 	if n == 0 {
 		return Lease{}, ErrPoolExhausted
 	}
+	now := p.clock.Now()
 
-	idx := p.cursor % n
-	p.cursor = (p.cursor + 1) % n
-	e := p.entries[idx]
-	return Lease{URL: e.url, pool: p, e: e}, nil
+	// Walk the ring starting at cursor; return the first usable entry.
+	for i := range n {
+		idx := (p.cursor + i) % n
+		e := p.entries[idx]
+		if p.isUsableLocked(e, now) {
+			p.cursor = (idx + 1) % n
+			return Lease{URL: e.url, pool: p, e: e}, nil
+		}
+	}
+	return Lease{}, ErrPoolExhausted
+}
+
+// isUsableLocked reports whether e can be handed out by Acquire. Must be
+// called with p.mu held.
+func (p *Pool) isUsableLocked(e *entry, now time.Time) bool {
+	switch e.state {
+	case stateHealthy:
+		return true
+	case stateCooling:
+		return !now.Before(e.nextOK)
+	case stateQuarantined:
+		return false
+	default:
+		return false
+	}
 }

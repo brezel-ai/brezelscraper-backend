@@ -48,6 +48,23 @@ func newFakeClock() *fakeClock {
 func (c *fakeClock) Now() time.Time          { return c.now }
 func (c *fakeClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
+// TestAcquire_ErrPoolExhaustedAfterAllRemoved locks in the contract that
+// Acquire never hands out a non-healthy entry. We bypass the state machine
+// here (set state directly) — the state machine itself is covered in Chunk 2.
+func TestAcquire_ErrPoolExhaustedAfterAllRemoved(t *testing.T) {
+	p, err := New([]string{"http://a"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p.mu.Lock()
+	p.entries[0].state = stateQuarantined
+	p.mu.Unlock()
+
+	if _, err := p.Acquire(); !errors.Is(err, ErrPoolExhausted) {
+		t.Fatalf("want ErrPoolExhausted, got %v", err)
+	}
+}
+
 func TestAcquire_RoundRobinAcrossHealthyEntries(t *testing.T) {
 	urls := []string{"http://a", "http://b", "http://c"}
 	p, err := New(urls)
