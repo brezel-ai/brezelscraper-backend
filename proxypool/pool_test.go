@@ -47,3 +47,22 @@ func newFakeClock() *fakeClock {
 
 func (c *fakeClock) Now() time.Time          { return c.now }
 func (c *fakeClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
+
+func TestAcquire_RoundRobinAcrossHealthyEntries(t *testing.T) {
+	urls := []string{"http://a", "http://b", "http://c"}
+	p, err := New(urls)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	want := []string{"http://a", "http://b", "http://c", "http://a", "http://b"}
+	for i, expected := range want {
+		lease, err := p.Acquire()
+		if err != nil {
+			t.Fatalf("call %d: Acquire returned error: %v", i+1, err)
+		}
+		if lease.URL != expected {
+			t.Errorf("call %d: got %q, want %q", i+1, lease.URL, expected)
+		}
+	}
+}

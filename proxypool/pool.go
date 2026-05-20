@@ -68,3 +68,24 @@ func New(urls []string, opts ...Option) (*Pool, error) {
 	}
 	return p, nil
 }
+
+// Acquire returns a Lease for the next available proxy in round-robin
+// order. At this stage it does NOT skip cooling/quarantined entries —
+// that lands in Task 3.
+//
+// Callers MUST call exactly one of Lease.ReportSuccess or
+// Lease.ReportFailure before discarding the returned Lease.
+func (p *Pool) Acquire() (Lease, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	n := len(p.entries)
+	if n == 0 {
+		return Lease{}, ErrPoolExhausted
+	}
+
+	idx := p.cursor % n
+	p.cursor = (p.cursor + 1) % n
+	e := p.entries[idx]
+	return Lease{URL: e.url, pool: p, e: e}, nil
+}
