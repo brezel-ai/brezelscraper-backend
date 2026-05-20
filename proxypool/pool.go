@@ -82,10 +82,11 @@ func (p *Pool) Acquire() (Lease, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// New guarantees len(entries) >= 1 and nothing in the pool's lifecycle
+	// removes entries, so the range below always inspects at least one
+	// candidate. An empty slice would naturally fall through to the trailing
+	// ErrPoolExhausted return — no separate empty-pool branch needed.
 	n := len(p.entries)
-	if n == 0 {
-		return Lease{}, ErrPoolExhausted
-	}
 	now := p.clock.Now()
 
 	// Walk the ring starting at cursor; return the first usable entry.
