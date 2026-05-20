@@ -111,6 +111,44 @@ func TestReviewsGenerateURLFailed_LogContext(t *testing.T) {
 	}
 }
 
+func TestReviewPageParseFailed_LogContext(t *testing.T) {
+	ctx, buf := newCaptureLogger(t, "USER-JOB-P", "user_TEST")
+	pj := &PlaceJob{}
+	pj.ID = "PLACE-JOB-P"
+	pj.ParentID = "SEARCH-JOB-P"
+	pj.URL = "https://www.google.com/maps/place/ParseFail"
+
+	entry := Entry{Title: "ParseFail Place"}
+
+	// Two garbage pages: extractReviews will fail to unmarshal both.
+	pages := [][]byte{
+		[]byte("not-json"),
+		[]byte("also-not-json"),
+	}
+	entry.AddExtraReviews(ctx, pj, pages)
+
+	recs := decodeLogLines(t, buf)
+	if len(recs) != 2 {
+		t.Fatalf("want 2 log records (one per failed page), got %d", len(recs))
+	}
+	for i, r := range recs {
+		if r["msg"] != "review_page_parse_failed" {
+			t.Errorf("rec %d msg: got %v", i, r["msg"])
+		}
+		for _, k := range []string{"job_id", "user_id", "place_job_id", "search_job_id", "place_url", "place_name", "page", "total_pages"} {
+			if _, ok := r[k]; !ok {
+				t.Errorf("rec %d missing %q", i, k)
+			}
+		}
+		if r["place_name"] != "ParseFail Place" {
+			t.Errorf("rec %d place_name: got %v", i, r["place_name"])
+		}
+		if r["total_pages"].(float64) != 2 {
+			t.Errorf("rec %d total_pages: got %v", i, r["total_pages"])
+		}
+	}
+}
+
 func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 	cases := []struct {
 		name string

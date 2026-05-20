@@ -344,7 +344,7 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 		}()
 		allReviewsRaw, ok := resp.Meta["reviews_raw"].(fetchReviewsResponse)
 		if ok && len(allReviewsRaw.pages) > 0 {
-			entry.AddExtraReviews(allReviewsRaw.pages)
+			entry.AddExtraReviews(ctx, j, allReviewsRaw.pages)
 		}
 	}()
 

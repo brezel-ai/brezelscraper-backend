@@ -1,10 +1,10 @@
 package gmaps
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"iter"
-	"log/slog"
 	"math"
 	"net/url"
 	"runtime/debug"
@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gosom/scrapemate"
 )
 
 type Image struct {
@@ -267,14 +269,18 @@ func (e *Entry) CsvRow() []string {
 	}
 }
 
-func (e *Entry) AddExtraReviews(pages [][]byte) {
+func (e *Entry) AddExtraReviews(ctx context.Context, j *PlaceJob, pages [][]byte) {
 	for i, page := range pages {
 		reviews, err := extractReviews(page)
 		if err != nil {
-			slog.Warn("review_page_parse_failed",
-				slog.Int("page", i+1),
-				slog.Int("total_pages", len(pages)),
-				slog.Any("error", err),
+			scrapemate.GetLoggerFromContext(ctx).Warn("review_page_parse_failed",
+				"place_job_id", j.ID,
+				"search_job_id", j.ParentID,
+				"place_url", j.GetURL(),
+				"place_name", e.Title,
+				"page", i+1,
+				"total_pages", len(pages),
+				"error", err,
 			)
 			continue
 		}
