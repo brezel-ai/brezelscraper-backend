@@ -1518,7 +1518,8 @@ entry mutations across the lock boundary."
 > - Tasks 12/13 → `58fe8ac` (proxypool.Pool wired into scrapeJob; panic-safe lease reporting via defer; classifyProxyOutcome helper; CauseProxyPoolExhausted)
 > - Task 14 → `e2b1daf` (/internal/proxy/stats HTTP handler via web.ServerConfig.InternalHandlers extension point; 503 on nil pool; credential-stripped JSON)
 > - Task 15 → `a3dd2b4` (two end-to-end tests: 50-scrape mixed-outcome simulation + cooled-pool recovery)
-> Chunk 4 awaiting code review.
+> - Chunk 4 review fixes → `ce90c62` (mateErr shadowing on forcedCompletionCh path FIXED — was a real classification bug; proxyAttempted gate; double-reset cleanup; classifyProxyOutcome default → NetworkErr; InternalHandlers uniqueness comment; cross-job reviewEmptyCount race documented as known limitation, follow-up tracked)
+> - **Chunk 4 ✅ production-ready** (Sonnet reviewer verified)
 
 ### Task 11: Expose ReviewEmptyCount from gmaps
 
@@ -2124,6 +2125,8 @@ Expected: `MERGEABLE`.
 3. **Adaptive backoff tuning**: The current `2^n` exponential is hardcoded. Make it tunable via env / config once we have ops data on what cool durations actually recover.
 4. **Engine interface (`scrapeengine.Engine`)**: A separate ~150 LoC piece of work. The Pool stays unchanged when this lands. See the "Phase 2" section of the architectural read.
 5. **Webhook circuit breaker pattern lift**: `postgres/webhook.go:276-336` has a robust idempotent state machine that the V2 Postgres-backed pool should mirror. Reuse, don't reinvent.
+
+6. **Per-job review-empty counter (replaces process-global `gmaps.reviewEmptyCount`)**: Under `max_concurrent_jobs > 1`, the global counter is shared across simultaneous scrapes. A concurrent scrape that trips its own breaker drives THIS scrape's `ReviewEmptyCount()` read past threshold and the proxy assigned here gets a spurious SoftReject. Pre-this-PR the same race caused spurious mid-scrape review-skip; this PR propagates the consequence to proxy health, which is a regression in fidelity even though the proxy pool's cooling recovers. The right fix is per-job state (via context value or a per-PlaceJob counter that aggregates to the scrape), not a snapshot trick. Tracked as a follow-up because it touches gmaps's core review pipeline.
 
 ---
 
