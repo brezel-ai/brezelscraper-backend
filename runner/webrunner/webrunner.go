@@ -929,8 +929,9 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		}
 	}()
 
-	// Reset the review circuit breaker for this new job
-	gmaps.ResetReviewCircuitBreaker()
+	// (Review circuit breaker was already reset earlier in scrapeJob, just
+	// after the defer recovery block. A second reset here was redundant
+	// and made readers wonder which one was "real" — removed.)
 
 	// Initialize deduper and exitMonitor before use
 	dedup := deduper.New()
@@ -971,20 +972,29 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 	}
 
 	// Panic-safe lease reporting. Closure captures jobSuccess, mateErr,
-	// reviewCircuitTripped by reference — populate them as the function
-	// progresses. The defer is the only place that knows about every
-	// exit path; the atomic-Bool guard inside the Lease makes
+	// reviewCircuitTripped, and proxyAttempted by reference — populate them
+	// as the function progresses. The defer is the only place that knows
+	// about every exit path; the atomic-Bool guard inside the Lease makes
 	// double-reporting safe even if the surrounding code also tries.
+	//
+	// proxyAttempted is critical: setupMate failures happen BEFORE the
+	// proxy is actually exercised by scrapemate, so they must not be
+	// blamed on the proxy. We set proxyAttempted=true immediately after
+	// setupMate succeeds; if it failed, the defer skips reporting and the
+	// lease is implicitly released without affecting proxy health.
 	var (
 		jobSuccess           bool
 		mateErr              error
 		reviewCircuitTripped bool
+		proxyAttempted       bool
 	)
 	defer func() {
 		if proxyLease == nil {
 			return
 		}
 		if r := recover(); r != nil {
+			// On panic the proxy WAS involved by the time we got here —
+			// blame it conservatively as NetworkErr.
 			proxyLease.ReportFailure(proxypool.NetworkErr)
 			w.logger.Error("proxy_lease_reported_on_panic",
 				slog.String("job_id", job.ID),
@@ -992,6 +1002,16 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 				slog.Any("panic", r),
 			)
 			panic(r) // re-raise so existing recover wrappers handle it
+		}
+		if !proxyAttempted {
+			// setupMate failed (or an earlier guard returned). The proxy
+			// was never actually used — do not pollute its health metrics
+			// with an infrastructure failure that's unrelated to it.
+			w.logger.Debug("proxy_outcome_not_reported_proxy_unused",
+				slog.String("job_id", job.ID),
+				slog.String("proxy_host", proxypool.HostOf(proxyLease.URL)),
+			)
+			return
 		}
 		reason, fail := classifyProxyOutcome(jobSuccess, mateErr, reviewCircuitTripped)
 		if fail {
@@ -1014,6 +1034,9 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 
 	mate, err := w.setupMate(jobCtx, outfile, job, exitMonitor, jobProxy)
 	if err != nil {
+		// setupMate failed BEFORE the proxy was exercised. Leave
+		// proxyAttempted=false so the defer skips reporting — see the
+		// defer block above for the rationale.
 		outcome = OutcomeFailed(CauseRuntimeError, "job initialization failed", err)
 		job.Status = outcome.Status
 		job.FailureReason = outcome.FailureReason
@@ -1026,6 +1049,12 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		)
 		return outcome
 	}
+
+	// setupMate succeeded — past this point the proxy is bound to the
+	// scrapemate config and may be exercised by browser navigation /
+	// stealth fetches. Mark proxyAttempted so the lease-report defer
+	// classifies the outcome instead of silently skipping.
+	proxyAttempted = true
 
 	var closeOnce sync.Once
 	closeMate := func() { closeOnce.Do(func() { mate.Close() }) }
@@ -1233,11 +1262,17 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 				slog.String("job_id", job.ID),
 				slog.String("detail", "exit monitor detected completion, 30s grace elapsed, forcing shutdown"),
 			)
-			mateErr, leaked := w.shutdownMate(job.ID, cancel, closeMate, resultCh)
+			// Rename the local to avoid shadowing the function-scope
+			// `mateErr` (closure-captured by the proxy-lease defer). Assign
+			// to the outer `err` so the defer reads the real shutdown
+			// failure — without this promotion, a forced-completion shutdown
+			// that surfaces an error is silently reported as Success.
+			shutdownErr, leaked := w.shutdownMate(job.ID, cancel, closeMate, resultCh)
+			err = shutdownErr
 			w.logger.Info("shutdown_mate_result",
 				slog.String("job_id", job.ID),
 				slog.Bool("leaked", leaked),
-				slog.Any("error", mateErr),
+				slog.Any("error", shutdownErr),
 			)
 			if leaked {
 				var resultCount int
@@ -1263,10 +1298,10 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 					)
 					err = nil
 				} else {
-					err = mateErr
+					err = shutdownErr
 				}
 			} else {
-				err = mateErr
+				err = shutdownErr
 			}
 		}
 
@@ -1319,6 +1354,13 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		// scrapeJob. ReviewEmptyCount is read AFTER mate.Start returns
 		// (reading mid-scrape would be racy with reviews.go's atomic).
 		mateErr = err
+		// Use the post-job counter directly. gmaps.reviewEmptyCount is
+		// process-global, reset at job start above. With
+		// max_concurrent_jobs > 1, two scrapes share this counter — a
+		// concurrent scrape can drive the value past the threshold and
+		// cause THIS scrape to mis-attribute a SoftReject. The bound is
+		// best-effort until reviewEmptyCount becomes per-job state
+		// (tracked as a follow-up; see the plan doc's Open Follow-ups).
 		reviewCircuitTripped = gmaps.ReviewEmptyCount() >= gmaps.ReviewCircuitBreakerThreshold()
 
 		// Operational logging that the old err-tree emitted; preserved here so
@@ -1644,7 +1686,12 @@ func classifyProxyOutcome(jobSuccess bool, jobErr error, reviewCircuitTripped bo
 		// rather than quarantines (the IP may recover).
 		return proxypool.SoftReject, true
 	default:
-		return 0, false
+		// report=false means the caller MUST NOT use the returned reason;
+		// it's a placeholder. We return NetworkErr (rather than the zero
+		// value 0=SoftReject) so a future refactor that accidentally
+		// drops the report-flag check at least defaults to the most
+		// conservative classification instead of silently SoftReject-ing.
+		return proxypool.NetworkErr, false
 	}
 }
 

@@ -96,6 +96,14 @@ type ServerConfig struct {
 	// 9090 (alongside /health and /metrics). The webrunner registers
 	// /internal/proxy/stats through here so web.go doesn't need to import
 	// proxypool — keeps web/ free of scraping-internal coupling.
+	//
+	// Paths MUST be unique across all callers. Internally we use
+	// http.ServeMux.Handle which panics on duplicate registration; map
+	// iteration order is non-deterministic so a duplicate path would
+	// also have undefined "which one wins" semantics. Document and
+	// enforce uniqueness at the caller boundary if multiple sources of
+	// handlers ever need to compose. Currently registered paths (V1):
+	//   /internal/proxy/stats — proxypool snapshot, from webrunner.
 	InternalHandlers map[string]http.Handler
 }
 
