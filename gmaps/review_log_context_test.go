@@ -73,6 +73,44 @@ func TestJSONExtractionFallback_LogContext(t *testing.T) {
 	}
 }
 
+func TestReviewsGenerateURLFailed_LogContext(t *testing.T) {
+	ctx, buf := newCaptureLogger(t, "USER-JOB-R", "user_TEST")
+
+	// generateURL needs a mapURL that fails the placeIDRegex; an URL
+	// without "!1s<id>" segment qualifies.
+	params := fetchReviewsParams{
+		mapURL:      "https://www.google.com/maps/place/Test/data=garbage",
+		reviewCount: 100, // > 8 to trigger an attempt
+		maxReviews:  50,
+		langCode:    "en",
+		// new fields added by this task:
+		placeJobID:  "PLACE-JOB-R",
+		searchJobID: "SEARCH-JOB-R",
+		placeName:   "Test",
+	}
+	// page is nil — fetch must not deref it before the URL error path
+	f := newReviewFetcher(params)
+	_, err := f.fetch(ctx)
+	if err == nil {
+		t.Fatal("expected fetch to fail on unparseable URL")
+	}
+
+	// At least one log line should have appeared (reviews_generate_url_failed
+	// or the initial "failed to fetch initial review page" wrapper).
+	// Either way, the line must carry place context.
+	recs := decodeLogLines(t, buf)
+	if len(recs) == 0 {
+		t.Fatal("expected at least one log record from reviews.go")
+	}
+	for i, r := range recs {
+		for _, k := range []string{"job_id", "user_id", "place_job_id", "search_job_id", "place_url", "place_name"} {
+			if _, ok := r[k]; !ok {
+				t.Errorf("rec %d (%v): missing %q", i, r["msg"], k)
+			}
+		}
+	}
+}
+
 func TestReviewExtractionLogs_AllCarryUserAndSearchContext(t *testing.T) {
 	cases := []struct {
 		name string

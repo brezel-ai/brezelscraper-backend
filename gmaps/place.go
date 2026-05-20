@@ -571,6 +571,9 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 				reviewCount: reviewCount,
 				maxReviews:  j.ReviewsMax,
 				langCode:    j.URLParams["hl"],
+				placeJobID:  j.ID,
+				searchJobID: j.ParentID,
+				placeName:   "", // entry.Title is set later in Process — left empty
 			}
 
 			reviewFetcher := newReviewFetcher(params)
