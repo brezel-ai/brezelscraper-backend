@@ -631,7 +631,8 @@ returning whatever sits at the cursor."
 > **Execution log:**
 > - Task 4 → `964a8d2` (Lease.ReportSuccess + Acquire returns *Lease)
 > - Tasks 5/6/7 → `becf1fe` (ReportFailure, exp-backoff coolDuration, transitionLocked, cooling-deadline reacquire, idempotency)
-> Chunk 2 awaiting code review.
+> - Chunk 2 review fixes → `d9ca8b1` (quarantine-guards, ordering-invariant comments, wrap-boundary tests, BlockedByTarget counter assertions)
+> - **Chunk 2 ✅ production-ready** (Sonnet reviewer verified)
 
 ### Task 4: Lease.ReportSuccess clears counters
 
