@@ -300,6 +300,7 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 
 	// Successful JSON extraction and parsing
 	entry = parsedEntry
+	checkPlacePayloadInvariants(ctx, j, &entry)
 
 	// Per-place image cap enforcement (post-EntryFromJSON).
 	//
@@ -674,6 +675,33 @@ func (j *PlaceJob) extractJSON(ctx context.Context, page playwright.Page) ([]byt
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("empty app state after extraction")
+}
+
+// checkPlacePayloadInvariants emits warning canaries when EntryFromJSON
+// returns an entry whose populated fields are mutually inconsistent — the
+// strongest available signal that Google has changed the JSON shape such
+// that one field still parses but a related field has moved.
+//
+// Today the only invariant we check is "rating > 0 implies review_count > 0",
+// because that's the exact corruption pattern that motivated Fix A
+// (isCompletePlacePayload). A future Google shape change that moves
+// review_count to a new index inside darray[4] (without changing the array
+// length) would slip past Fix A — this canary catches it.
+//
+// We deliberately do NOT check the reverse direction (review_count > 0,
+// rating == 0): that legitimately occurs on places mid-moderation, where
+// the displayed average is suppressed while review records remain.
+func checkPlacePayloadInvariants(ctx context.Context, j *PlaceJob, entry *Entry) {
+	if entry.ReviewRating > 0 && entry.ReviewCount == 0 {
+		scrapemate.GetLoggerFromContext(ctx).Warn("place_payload_inconsistent_review_count",
+			"place_job_id", j.ID,
+			"search_job_id", j.ParentID,
+			"place_url", j.GetURL(),
+			"place_name", entry.Title,
+			"rating", entry.ReviewRating,
+			"detail", "rating > 0 but review_count == 0 — likely Google JSON shape change (review_count missing) OR an extractJSON race that Fix A did not catch",
+		)
+	}
 }
 
 // isCompletePlacePayload reports whether the extracted raw JSON contains the
