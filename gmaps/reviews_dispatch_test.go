@@ -7,29 +7,26 @@ import (
 	"testing"
 )
 
-// TestFetchReviewPage_CallsBrowserFetch locks the dispatch contract: the
-// review fetcher MUST go through fetchInBrowser. There is no fallback —
-// previous attempts to fall back to Go HTTP returned the 33-byte stub
-// and masked the real failure.
+// fetchReviewPage must route through the per-fetcher browserFetch hook —
+// there is no Go-HTTP fallback.
 func TestFetchReviewPage_CallsBrowserFetch(t *testing.T) {
 	called := false
-	orig := fetchInBrowserFn
-	t.Cleanup(func() { fetchInBrowserFn = orig })
-	fetchInBrowserFn = func(_ context.Context, p browserPage, url string) ([]byte, error) {
-		called = true
-		if p == nil {
-			t.Errorf("nil page passed through")
-		}
-		return []byte("real-body"), nil
+	f := &fetcher{
+		params: fetchReviewsParams{page: &fakePage{}},
+		browserFetch: func(_ context.Context, p browserPage, _ string) ([]byte, error) {
+			called = true
+			if p == nil {
+				t.Errorf("nil page passed through")
+			}
+			return []byte("real-body"), nil
+		},
 	}
-
-	f := &fetcher{params: fetchReviewsParams{page: &fakePage{}}}
 	body, err := f.fetchReviewPage(context.Background(), "https://x")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if !called {
-		t.Fatal("fetchInBrowserFn was not called")
+		t.Fatal("browserFetch was not called")
 	}
 	if string(body) != "real-body" {
 		t.Fatalf("body = %q", string(body))
@@ -47,13 +44,15 @@ func TestFetchReviewPage_ReturnsErrorWhenPageNil(t *testing.T) {
 	}
 }
 
+// ErrBrowserPageClosed must propagate through fetchReviewPage's %w wrap so
+// callers can errors.Is-check it for retry policy.
 func TestFetchReviewPage_ReturnsErrorWhenPageClosed(t *testing.T) {
-	orig := fetchInBrowserFn
-	t.Cleanup(func() { fetchInBrowserFn = orig })
-	fetchInBrowserFn = func(_ context.Context, p browserPage, _ string) ([]byte, error) {
-		return nil, ErrBrowserPageClosed
+	f := &fetcher{
+		params: fetchReviewsParams{page: &fakePage{closed: true}},
+		browserFetch: func(_ context.Context, _ browserPage, _ string) ([]byte, error) {
+			return nil, ErrBrowserPageClosed
+		},
 	}
-	f := &fetcher{params: fetchReviewsParams{page: &fakePage{closed: true}}}
 	_, err := f.fetchReviewPage(context.Background(), "https://x")
 	if err == nil || !errors.Is(err, ErrBrowserPageClosed) {
 		t.Fatalf("want ErrBrowserPageClosed, got %v", err)

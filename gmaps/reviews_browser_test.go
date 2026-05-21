@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// browserFetchResult is the typed JS-return contract: page.Evaluate must
-// return exactly four fields so the Go side has deterministic classification
-// of (a) network failure, (b) HTTP non-200, (c) successful body.
 func TestUnmarshalBrowserFetchResult_Success(t *testing.T) {
 	raw := map[string]any{
 		"ok":     true,
@@ -85,10 +82,8 @@ func TestBrowserFetchSnippet_Shape(t *testing.T) {
 	}
 }
 
-// fakePage is a minimal stand-in for the playwright.Page surface that
-// fetchInBrowser actually touches. Defined here (not in production code)
-// because it is test-only — the production interface is browserPage in
-// reviews_browser.go.
+// fakePage records the JS and URL passed to Evaluate so dispatch tests can
+// assert the call contract without launching a real browser.
 type fakePage struct {
 	closed    bool
 	gotURL    string
@@ -135,8 +130,24 @@ func TestFetchInBrowser_PageClosed(t *testing.T) {
 
 func TestFetchInBrowser_NilPage(t *testing.T) {
 	_, err := fetchInBrowser(context.Background(), nil, "https://x")
+	if !errors.Is(err, ErrBrowserPageNil) {
+		t.Fatalf("want ErrBrowserPageNil, got %v", err)
+	}
+}
+
+// page.Evaluate's own error (e.g., the CDP connection dropped) must wrap
+// through to the caller so the error chain remains inspectable.
+func TestFetchInBrowser_EvaluateError(t *testing.T) {
+	p := &fakePage{returnErr: errors.New("cdp connection lost")}
+	_, err := fetchInBrowser(context.Background(), p, "https://x")
 	if err == nil {
-		t.Fatal("want error for nil page, got nil")
+		t.Fatal("want error from Evaluate, got nil")
+	}
+	if !strings.Contains(err.Error(), "page.Evaluate") {
+		t.Errorf("error should be wrapped with page.Evaluate prefix, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "cdp connection lost") {
+		t.Errorf("underlying error not preserved, got %v", err)
 	}
 }
 
@@ -160,23 +171,24 @@ func TestFetchInBrowser_Non200(t *testing.T) {
 	}
 }
 
-// TestUnmarshalBrowserFetchResult_AcceptsIntStatus is the regression
-// test for the bug found during live verification: playwright-go returns
-// numeric JS values as Go int, not float64. The original implementation
-// only accepted float64 and rejected every real-world response with
-// "field 'status' not number (was int)".
-func TestUnmarshalBrowserFetchResult_AcceptsIntStatus(t *testing.T) {
-	raw := map[string]any{
-		"ok":     true,
-		"status": int(200),
-		"body":   ")]}'\n[\"reviews-here\"]",
-		"error":  "",
+// playwright-go marshals JS numbers as int, int64, or float64 — all three
+// must be accepted. Regression for an early bug where only float64 worked.
+func TestUnmarshalBrowserFetchResult_StatusNumericTypes(t *testing.T) {
+	cases := map[string]any{
+		"int":     int(200),
+		"int64":   int64(200),
+		"float64": float64(200),
 	}
-	got, err := unmarshalBrowserFetchResult(raw)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got.Status != 200 {
-		t.Errorf("Status = %d, want 200", got.Status)
+	for name, status := range cases {
+		t.Run(name, func(t *testing.T) {
+			raw := map[string]any{"ok": true, "status": status, "body": "", "error": ""}
+			got, err := unmarshalBrowserFetchResult(raw)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got.Status != 200 {
+				t.Errorf("Status = %d, want 200", got.Status)
+			}
+		})
 	}
 }

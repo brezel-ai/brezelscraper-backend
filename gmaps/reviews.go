@@ -17,7 +17,7 @@ import (
 const maxReviewPages = 500
 
 type fetchReviewsParams struct {
-	page        browserPage // satisfied by playwright.Page — see reviews_browser.go
+	page        browserPage // nil means no browser in scope; fetchReviewPage returns an error.
 	mapURL      string
 	reviewCount int
 	maxReviews  int    // Maximum number of reviews to fetch
@@ -38,11 +38,10 @@ type fetchReviewsParams struct {
 	userJobID string
 }
 
-// fetchInBrowserFn is a test seam. Production calls go through fetchReviewPage
-// which invokes this var; tests reassign it via t.Cleanup so dispatch can be
-// verified without launching a real browser. Explicit function type catches
-// signature drift in fetchInBrowser at the declaration line.
-var fetchInBrowserFn func(context.Context, browserPage, string) ([]byte, error) = fetchInBrowser
+// fetchInBrowserFunc matches the production fetchInBrowser signature.
+// fetcher.fetch holds an instance — defaulted to fetchInBrowser, overridden
+// by tests to avoid launching a real browser.
+type fetchInBrowserFunc func(ctx context.Context, page browserPage, url string) ([]byte, error)
 
 // userArgsFromParams returns the user_id/job_id args for a fetchReviewsParams,
 // omitting any empty values. See userArgs in place.go for rationale.
@@ -63,10 +62,15 @@ type fetchReviewsResponse struct {
 
 type fetcher struct {
 	params fetchReviewsParams
+	// browserFetch is the function used to perform one paginated listugcposts
+	// request. Always non-nil after newReviewFetcher; tests inject a stub here
+	// to avoid launching a real browser. Held per-fetcher (not package-global)
+	// so concurrent tests do not race on a shared seam.
+	browserFetch fetchInBrowserFunc
 }
 
 func newReviewFetcher(params fetchReviewsParams) (*fetcher, error) {
-	return &fetcher{params: params}, nil
+	return &fetcher{params: params, browserFetch: fetchInBrowser}, nil
 }
 
 func (f *fetcher) langForURL() string {
@@ -186,7 +190,6 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 	return ans, nil
 }
 
-// Note the added 'requestID' parameter
 func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID string) (string, error) {
 	placeIDRegex := regexp.MustCompile(`!1s([^!]+)`)
 
@@ -221,20 +224,16 @@ func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID 
 	return fullURL, nil
 }
 
-// fetchReviewPage requests one paginated page of listugcposts JSON from
-// inside the running Playwright page. There is no fallback: if the page
-// is nil or closed, the request fails — Go-HTTP cannot reproduce a real
-// browser well enough for Google to honor this endpoint, regardless of
-// cookies, SAPISIDHASH headers, or TLS-fingerprint impersonation.
-//
-// See docs/superpowers/plans/2026-05-20-browser-based-review-fetch.md
-// for the byte-level reproduction across multiple TLS clients, proxies,
-// and SAPISIDHASH variants — all returning the 33-byte stub.
+// fetchReviewPage fetches one paginated listugcposts response from inside
+// the running Playwright page. No fallback: Go-HTTP clients cannot reproduce
+// the browser's TLS, HTTP/2, and session-cookie context faithfully enough for
+// Google to return real reviews. If the page is nil or closed, the call
+// fails and the caller surfaces the error.
 func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error) {
 	if f.params.page == nil {
 		return nil, errors.New("no playwright page in scope for review fetch")
 	}
-	body, err := fetchInBrowserFn(ctx, f.params.page, u)
+	body, err := f.browserFetch(ctx, f.params.page, u)
 	if err != nil {
 		return nil, fmt.Errorf("browser review fetch: %w", err)
 	}
