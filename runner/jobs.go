@@ -52,10 +52,10 @@ type SeedJobConfig struct {
 
 	// ProxyURL is the upstream HTTP proxy URL selected for this scrape (the
 	// per-job rotated one already applied to scrapemate via WithProxies).
-	// Forwarded to GmapJob.ProxyURL → PlaceJob.ProxyURL → reviews.go's
-	// fetchWithCookies so the cookie-authenticated review-RPC request egresses
-	// through the same proxy as browser navigation. Empty preserves the
-	// pre-fix behavior (direct egress) — used by CLI/standalone runs.
+	// Forwarded to GmapJob.ProxyURL → PlaceJob.ProxyURL for telemetry only —
+	// the browser uses the proxy via scrapemate's per-job config (this field
+	// is read by review_api_empty_response and related log emitters).
+	// Empty in CLI/standalone runs.
 	ProxyURL string
 }
 
@@ -153,8 +153,7 @@ func CreateSeedJobs(cfg SeedJobConfig) (jobs []scrapemate.IJob, err error) {
 			}
 
 			// Propagate the per-scrape rotated proxy URL so PlaceJob.ProxyURL
-			// carries it down to reviews.go's fetchWithCookies — see
-			// SeedJobConfig.ProxyURL.
+			// carries it down for telemetry. See SeedJobConfig.ProxyURL.
 			if cfg.ProxyURL != "" {
 				opts = append(opts, gmaps.WithProxyURL(cfg.ProxyURL))
 			}

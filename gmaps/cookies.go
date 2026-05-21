@@ -177,29 +177,3 @@ func InjectCookiesIntoPage(page playwright.Page) error {
 	slog.Debug("cookies_injected_into_page", slog.Int("count", len(pwCookies)))
 	return nil
 }
-
-// GetCookieHeader returns a Cookie header string for HTTP requests.
-// Used by the review fetcher to authenticate RPC calls.
-func GetCookieHeader() string {
-	cookies, err := LoadGoogleCookies()
-	if err != nil || len(cookies) == 0 {
-		return ""
-	}
-	return cookieHeaderFromEntries(cookies)
-}
-
-// cookieHeaderFromEntries serializes cookie entries into the RFC 6265
-// `Name=Value; Name=Value; …` Cookie header format. Entries with empty
-// Name or Value are skipped — emitting `Name=` is permitted by the RFC
-// but some Google endpoints treat it as a malformed header and fall back
-// to the unauthenticated response path.
-func cookieHeaderFromEntries(cookies []CookieEntry) string {
-	parts := make([]string, 0, len(cookies))
-	for _, c := range cookies {
-		if c.Name == "" || c.Value == "" {
-			continue
-		}
-		parts = append(parts, c.Name+"="+c.Value)
-	}
-	return strings.Join(parts, "; ")
-}

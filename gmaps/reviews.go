@@ -7,22 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
-	"github.com/gosom/google-maps-scraper/proxypool"
 	"github.com/gosom/scrapemate"
-	"github.com/playwright-community/playwright-go"
 )
 
 const maxReviewPages = 500
 
 type fetchReviewsParams struct {
-	page        playwright.Page
+	page        browserPage // nil means no browser in scope; fetchReviewPage returns an error.
 	mapURL      string
 	reviewCount int
 	maxReviews  int    // Maximum number of reviews to fetch
@@ -41,16 +36,12 @@ type fetchReviewsParams struct {
 	// stripping the .With(job_id, user_id) attributes set by the webrunner.
 	userID    string
 	userJobID string
-	// proxyURL is the upstream HTTP proxy URL applied to the cookie-authenticated
-	// review-RPC fetch (fetchWithCookies). Empty means direct egress, which is
-	// what the prior implementation always did. Propagated from PlaceJob.ProxyURL,
-	// which the webrunner sets to the same per-scrape rotated proxy already used
-	// for browser navigation. Routing this request through the proxy avoids
-	// Google's datacenter-IP rejection on /maps/rpc/listugcposts — verified May
-	// 2026 with byte-level reproduction: cookies + direct (Netcup) = 33-byte
-	// `[null,null,null,null,null,1]` stub; cookies + Decodo proxy = full reviews.
-	proxyURL string
 }
+
+// fetchInBrowserFunc matches the production fetchInBrowser signature.
+// fetcher.fetch holds an instance — defaulted to fetchInBrowser, overridden
+// by tests to avoid launching a real browser.
+type fetchInBrowserFunc func(ctx context.Context, page browserPage, url string) ([]byte, error)
 
 // userArgsFromParams returns the user_id/job_id args for a fetchReviewsParams,
 // omitting any empty values. See userArgs in place.go for rationale.
@@ -70,24 +61,16 @@ type fetchReviewsResponse struct {
 }
 
 type fetcher struct {
-	// cookieFetchClient is the *http.Client used by fetchWithCookies for every
-	// paginated review-page request. Built once in newReviewFetcher and reused
-	// across all f.fetch() pages so the connection pool (which lives on
-	// http.Transport, not http.Client) actually pools — without this, every
-	// page costs a fresh TCP + TLS + proxy CONNECT handshake.
-	cookieFetchClient *http.Client
-	params            fetchReviewsParams
+	params fetchReviewsParams
+	// browserFetch is the function used to perform one paginated listugcposts
+	// request. Always non-nil after newReviewFetcher; tests inject a stub here
+	// to avoid launching a real browser. Held per-fetcher (not package-global)
+	// so concurrent tests do not race on a shared seam.
+	browserFetch fetchInBrowserFunc
 }
 
 func newReviewFetcher(params fetchReviewsParams) (*fetcher, error) {
-	cookieClient, err := newCookieFetchClient(params.proxyURL)
-	if err != nil {
-		return nil, err
-	}
-	return &fetcher{
-		params:            params,
-		cookieFetchClient: cookieClient,
-	}, nil
+	return &fetcher{params: params, browserFetch: fetchInBrowser}, nil
 }
 
 func (f *fetcher) langForURL() string {
@@ -207,7 +190,6 @@ func (f *fetcher) fetch(ctx context.Context) (fetchReviewsResponse, error) {
 	return ans, nil
 }
 
-// Note the added 'requestID' parameter
 func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID string) (string, error) {
 	placeIDRegex := regexp.MustCompile(`!1s([^!]+)`)
 
@@ -242,116 +224,25 @@ func (f *fetcher) generateURL(mapURL, pageToken string, pageSize int, requestID 
 	return fullURL, nil
 }
 
+// fetchReviewPage fetches one paginated listugcposts response from inside
+// the running Playwright page. No fallback: Go-HTTP clients cannot reproduce
+// the browser's TLS, HTTP/2, and session-cookie context faithfully enough for
+// Google to return real reviews. If the page is nil or closed, the call
+// fails and the caller surfaces the error.
 func (f *fetcher) fetchReviewPage(ctx context.Context, u string) ([]byte, error) {
-	// Authenticated fetch with Google cookies. Reuses f.cookieFetchClient
-	// which was built once per fetcher in newReviewFetcher — so paginated
-	// review-page requests share a single connection pool. The client's
-	// transport is pinned to f.params.proxyURL when non-empty (see
-	// fetchReviewsParams.proxyURL).
-	//
-	// We intentionally do NOT fall back to an unauthenticated stealth fetch
-	// on error: that path bypasses both cookies and the proxy and returns the
-	// same 33-byte stub Google serves to anonymous callers, which masks the
-	// real failure and pollutes the review_circuit_breaker tally. Surface
-	// the cookied error directly.
-	cookies, err := LoadGoogleCookies()
+	if f.params.page == nil {
+		return nil, errors.New("no playwright page in scope for review fetch")
+	}
+	body, err := f.browserFetch(ctx, f.params.page, u)
 	if err != nil {
-		return nil, fmt.Errorf("load google cookies: %w", err)
+		return nil, fmt.Errorf("browser review fetch: %w", err)
 	}
-	if len(cookies) == 0 {
-		return nil, errors.New("google cookies not configured")
-	}
-	return fetchWithCookies(ctx, u, cookies, f.cookieFetchClient, time.Now)
-}
-
-// fetchWithCookies performs an authenticated GET against Google's review RPC.
-// It sends:
-//   - Cookie:         the loaded Google session cookies
-//   - Authorization:  SAPISIDHASH / SAPISID1PHASH / SAPISID3PHASH (see
-//     applyGoogleAuthHeaders). REQUIRED — without it Google returns the
-//     33-byte unauthenticated stub `)]}'\n[null,null,null,null,null,1]` even
-//     with valid cookies.
-//   - Origin / Referer / X-Goog-AuthUser / X-Same-Domain: matching what
-//     Chrome sends from www.google.com.
-//
-// The client carries the per-scrape proxy configuration (pinned via
-// newCookieFetchClient) and a shared connection pool that survives across
-// paginated review-page fetches — see fetcher.cookieFetchClient. Routing
-// through a proxy matters because Google soft-rejects datacenter IPs on
-// /maps/rpc/listugcposts; the fix is to share the upstream identity that
-// browser navigation already uses.
-//
-// `now` is injected for deterministic tests; production callers pass
-// time.Now (the function value, not the result — we want a fresh timestamp
-// per request because SAPISIDHASH validity is short-lived).
-func fetchWithCookies(ctx context.Context, u string, cookies []CookieEntry, client *http.Client, now func() time.Time) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Cookie", cookieHeaderFromEntries(cookies))
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	applyGoogleAuthHeaders(req, cookies, now())
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("authenticated fetch returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
+	scrapemate.GetLoggerFromContext(ctx).Debug(
+		"review_fetch_succeeded",
+		"fetch_via", "browser",
+		"bytes", len(body),
+	)
 	return body, nil
-}
-
-// newCookieFetchClient builds the *http.Client used by fetchWithCookies.
-//
-// When proxyURL is empty, returns a client with NIL Transport, which causes
-// net/http to fall back to the package-global http.DefaultTransport. That
-// transport is (a) shared/pooled across the whole process and (b) configured
-// with Proxy: http.ProxyFromEnvironment, so HTTPS_PROXY / HTTP_PROXY /
-// NO_PROXY env vars are honored. This preserves the pre-fix behavior verbatim
-// for CLI/standalone use and ensures no accidental loss of connection reuse.
-//
-// When proxyURL is non-empty, the client owns an explicit *http.Transport with
-// Proxy pinned to that URL. Env vars are NOT consulted — we never want the
-// per-scrape rotated proxy that webrunner already selected to be silently
-// overridden by an OS-level setting.
-//
-// The returned client is intended to be held on a fetcher for its lifetime
-// and reused across every paginated review-page request — do NOT rebuild
-// per call, or the connection pool (which lives on the Transport) is thrown
-// away each time.
-func newCookieFetchClient(proxyURL string) (*http.Client, error) {
-	if proxyURL == "" {
-		// nil Transport → http.DefaultTransport (shared pool, env-aware).
-		return &http.Client{Timeout: 30 * time.Second}, nil
-	}
-	pu, err := url.Parse(proxyURL)
-	if err != nil {
-		// CRITICAL: do NOT wrap err with %w — url.Parse returns *url.Error
-		// whose Error() formats as "parse <full-URL>: <inner>". The full
-		// URL includes any user:password@ userinfo. Wrapping leaks
-		// credentials into structured logs (emitReviewExtractionFailed
-		// writes this error verbatim into the "error" log field).
-		// Surface the host:port (via proxypool.HostOf) and the inner
-		// error class only.
-		return nil, fmt.Errorf("parse proxy URL %s: invalid proxy URL syntax", proxypool.HostOf(proxyURL))
-	}
-	return &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: &http.Transport{Proxy: http.ProxyURL(pu)},
-	}, nil
 }
 
 func extractNextPageToken(data []byte) string {

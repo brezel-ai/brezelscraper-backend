@@ -105,14 +105,11 @@ type PlaceJob struct {
 	// the "job_id" field entirely in that case.
 	UserJobID string
 
-	// ProxyURL is the upstream HTTP proxy URL this PlaceJob's
-	// cookie-authenticated review-RPC requests should egress through. Empty
-	// means direct egress (the prior, default behavior). Set by the webrunner
-	// via WithPlaceJobProxyURL so path A (fetchWithCookies in reviews.go)
-	// uses the same per-scrape rotated proxy already applied to browser
-	// navigation via scrapemate. Without this, prod requests bypassed the
-	// proxy entirely and Google soft-rejected them on the datacenter IP —
-	// see fetchReviewsParams.proxyURL for the byte-level reproduction.
+	// ProxyURL is the upstream HTTP proxy URL assigned to this PlaceJob by
+	// the webrunner's proxy pool. Kept for telemetry (emitted as the
+	// `proxy_used` field in review_api_empty_response and related logs).
+	// The browser itself uses this proxy via scrapemate's per-job config,
+	// not via this field — see runner/webrunner/webrunner.go scrapeJob.
 	ProxyURL string
 }
 
@@ -172,10 +169,10 @@ func WithPlaceJobUserContext(userID, userJobID string) PlaceJobOptions {
 	}
 }
 
-// WithPlaceJobProxyURL sets the upstream HTTP proxy URL used by the
-// cookie-authenticated review-RPC fetch (fetchWithCookies). Empty string is
-// equivalent to omitting the option and preserves the prior direct-egress
-// behavior. See PlaceJob.ProxyURL for why this matters.
+// WithPlaceJobProxyURL records the proxy URL the scrapemate browser will use
+// for this job. The PlaceJob keeps it on the struct for telemetry only — the
+// browser receives the proxy through scrapemate's per-job config. See
+// PlaceJob.ProxyURL for the telemetry consumer.
 func WithPlaceJobProxyURL(proxyURL string) PlaceJobOptions {
 	return func(j *PlaceJob) {
 		j.ProxyURL = proxyURL
@@ -645,7 +642,6 @@ func (j *PlaceJob) BrowserActions(ctx context.Context, page playwright.Page) scr
 				placeName:   "", // entry.Title is set later in Process — left empty
 				userID:      j.UserID,
 				userJobID:   j.UserJobID,
-				proxyURL:    j.ProxyURL,
 			}
 
 			reviewFetcher, err := newReviewFetcher(params)
@@ -888,7 +884,8 @@ func emitReviewCircuitBreakerOpen(ctx context.Context, j *PlaceJob) {
 		"place_url", j.GetURL(),
 		"consecutive_failures", int(reviewEmptyCount.Load()),
 		"action", "skipping reviews for remaining places",
-		"likely_cause", "cookies expired or IP rate-limited",
+		"likely_cause", "browser page closed mid-pagination or Google rate-limited the session",
+		"fetch_via", "browser",
 	)
 	scrapemate.GetLoggerFromContext(ctx).Error("review_circuit_breaker_open", args...)
 }
@@ -901,6 +898,7 @@ func emitReviewExtractionFailed(ctx context.Context, j *PlaceJob, err error) {
 		"search_job_id", j.ParentID,
 		"place_url", j.GetURL(),
 		"error", err,
+		"fetch_via", "browser",
 	)
 	scrapemate.GetLoggerFromContext(ctx).Warn("review_extraction_failed", args...)
 }
@@ -923,7 +921,8 @@ func emitReviewAPIEmptyResponse(ctx context.Context, j *PlaceJob, reviewCountOnP
 		"consecutive_empty", consecutiveEmpty,
 		"response_sample", responseSampleForLog(body, 256),
 		"proxy_used", cmp.Or(proxypool.HostOf(j.ProxyURL), "direct"),
-		"possible_cause", "expired cookies, IP blocked, rate limited, or proxy returning stub",
+		"possible_cause", "expired cookies, IP blocked, rate limited, or page-context error",
+		"fetch_via", "browser",
 	)
 	scrapemate.GetLoggerFromContext(ctx).Warn("review_api_empty_response", args...)
 }
