@@ -55,11 +55,9 @@ type GmapJob struct {
 
 	// ProxyURL is the upstream HTTP proxy URL selected once per scrape by the
 	// webrunner (round-robin over the configured proxy pool). Forwarded to
-	// every PlaceJob spawned from this seed so that the cookie-authenticated
-	// review-RPC fetch in gmaps/reviews.go uses the same proxy already
-	// configured on scrapemate for browser navigation. Empty in CLI/standalone
-	// scrapes — fetchWithCookies then falls back to direct egress, which is
-	// the prior default. See PlaceJob.ProxyURL.
+	// every PlaceJob spawned from this seed for telemetry only — the browser
+	// uses the proxy via scrapemate's per-job config (see webrunner.scrapeJob).
+	// Empty in CLI/standalone scrapes. See PlaceJob.ProxyURL.
 	ProxyURL string
 }
 

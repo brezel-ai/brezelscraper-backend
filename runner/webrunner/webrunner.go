@@ -937,11 +937,13 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 	dedup := deduper.New()
 	exitMonitor := exiter.New()
 
-	// Acquire a Lease from the health-aware proxy pool. The same URL feeds
-	// both scrapemate (setupMate → WithProxies) and the seed jobs
-	// (SeedJobConfig.ProxyURL → fetchWithCookies), so the entire scrape
-	// shares one upstream identity. At job end the lease is reported as
-	// success or failure — see the defer block below.
+	// Acquire a Lease from the health-aware proxy pool. The URL feeds
+	// scrapemate (setupMate → WithProxies) for browser navigation; the
+	// browser is also the channel for the listugcposts review fetch via
+	// page.Evaluate (see gmaps/reviews_browser.go). SeedJobConfig.ProxyURL
+	// carries the same URL down to PlaceJob.ProxyURL for telemetry only.
+	// At job end the lease is reported as success or failure — see the
+	// defer block below.
 	//
 	// CLI mode (no proxies configured) falls through to the legacy
 	// pickProxyURL path with proxyLease==nil and no outcome reporting.

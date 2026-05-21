@@ -100,6 +100,33 @@ proxy_outcome_reported  job_id=... proxy_host=gate.decodo.com:NNNN outcome=succe
 - No `proxy_lease_reported_on_panic` events
 - No `proxy_pool_exhausted` events
 
+### Step 3a — Confirm browser-fetch is in use
+
+After Step 3 logs `proxy_outcome_reported outcome=success`, run on prod:
+
+```bash
+sudo journalctl -u brezel-backend --since="10 minutes ago" | grep review_fetch_succeeded | head -3
+```
+
+Expected:
+
+```
+review_fetch_succeeded fetch_via=browser bytes=NNNNN
+```
+
+Where `bytes` is **>33** (usually low-thousands to ~100 KB per page). If you
+see `review_api_empty_response` with `response_bytes=33` AND no
+`review_fetch_succeeded` lines, the browser path was not taken — the
+Playwright page was nil or closed before review pagination started.
+Investigate `BrowserActions` lifecycle in `gmaps/place.go`; the page must
+outlive review pagination.
+
+If you see `review_extraction_failed` with `no playwright page in scope for
+review fetch`, the runner is running without a browser (CLI mode). Web
+mode MUST use the scrapemate browser; CLI mode no longer fetches reviews
+— this is intentional. See `gmaps/reviews_browser.go` and the merge
+commit of the browser-based review fetch PR for the full rationale.
+
 ## Step 4 — Stats reflect the activity
 
 ```bash

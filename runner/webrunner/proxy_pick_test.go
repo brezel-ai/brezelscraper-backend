@@ -44,9 +44,9 @@ func TestPickProxyURL_RoundRobinAndIndexing(t *testing.T) {
 
 // TestPickProxyURL_EmptyPool returns the zero-value assignment without
 // incrementing the rotation counter. The zero value (URL=="") is what
-// CLI/standalone and tests-without-proxies pass through, and the cookie
-// fetch path falls back to direct egress via http.DefaultTransport — see
-// gmaps.newCookieFetchClient.
+// CLI/standalone and tests-without-proxies pass through — scrapemate's
+// browser then dials Google directly, and the listugcposts page.Evaluate
+// call inherits that direct-egress identity. See gmaps.fetchInBrowser.
 func TestPickProxyURL_EmptyPool(t *testing.T) {
 	w := &webrunner{} // proxyURLs is nil
 
