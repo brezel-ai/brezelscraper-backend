@@ -45,8 +45,6 @@ type Dependencies struct {
 	Version string
 	// GitCommit is the full Git commit SHA from build time (GIT_COMMIT env var).
 	GitCommit string
-	// BuildDate is the ISO-8601 build timestamp (BUILD_DATE env var).
-	BuildDate string
 
 	Sender notify.Sender // Support email sender; nil-safe
 	// Environment is parsed once at startup from APP_ENV. Handlers use this

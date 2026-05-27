@@ -186,7 +186,6 @@ func buildServerConfig(cfg *runner.Config, db *sql.DB, svc *web.Service, appCfg 
 		StripeWebhookAllowedCIDRs:  stripeWebhookAllowedCIDRs,
 		Version:                    resolveVersion(cfg.Version, appCfg.Build.Version),
 		GitCommit:                  appCfg.Build.GitCommit,
-		BuildDate:                  appCfg.Build.BuildDate,
 		InternalAddr:               appCfg.InternalAddr,
 		ResendAPIKey:               appCfg.ResendAPIKey,
 		Environment:                appCfg.AppEnv,

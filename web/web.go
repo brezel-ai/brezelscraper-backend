@@ -71,8 +71,6 @@ type ServerConfig struct {
 	Version string
 	// GitCommit is the full Git commit SHA (GIT_COMMIT env var from Docker build args).
 	GitCommit string
-	// BuildDate is the ISO-8601 build timestamp (BUILD_DATE env var from Docker build args).
-	BuildDate string
 	// InternalAddr is the listen address for the internal HTTP server that
 	// serves /metrics and /health. Keep this off the public interface to
 	// avoid exposing Prometheus metrics to unauthenticated clients (CWE-200).
@@ -202,7 +200,6 @@ func New(cfg ServerConfig) (*Server, error) {
 		GoogleSheetsSvc:     googlesheets.NewService(),
 		Version:             cfg.Version,
 		GitCommit:           cfg.GitCommit,
-		BuildDate:           cfg.BuildDate,
 		Environment:         cfg.Environment,
 		GoogleConfig:        cfg.GoogleConfig,
 	}

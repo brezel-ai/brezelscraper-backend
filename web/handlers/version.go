@@ -6,10 +6,10 @@ import (
 
 // VersionResponse contains build metadata and runtime information.
 // Fields are carefully selected to balance debugging utility with security.
-// Full git_commit and go_version are excluded to prevent targeted exploits.
+// Excluded: full git_commit (source targeting), go_version (CVE exploits),
+// build_date (reveals deploy cadence and patch freshness to attackers).
 type VersionResponse struct {
 	Version        string `json:"version"`
-	BuildDate      string `json:"build_date"`
 	GitCommitShort string `json:"git_commit_short"`
 	Environment    string `json:"environment"`
 }
@@ -26,8 +26,8 @@ func NewVersionHandler(deps Dependencies) *VersionHandler {
 
 // GetVersion returns build metadata as JSON.
 // This endpoint does not require authentication.
-// Exposes: version (clean semver), build_date, git_commit_short (7 chars), environment.
-// Excludes: full git_commit (source targeting), go_version (CVE exploits).
+// Exposes: version (clean semver), git_commit_short (7 chars), environment.
+// Excludes: full git_commit, go_version, build_date (OPSEC — see VersionResponse).
 func (h *VersionHandler) GetVersion(w http.ResponseWriter, r *http.Request) {
 	v := cleanVersion(h.Deps.Version)
 	if v == "" {
@@ -41,7 +41,6 @@ func (h *VersionHandler) GetVersion(w http.ResponseWriter, r *http.Request) {
 
 	response := VersionResponse{
 		Version:        v,
-		BuildDate:      h.Deps.BuildDate,
 		GitCommitShort: gitCommit,
 		Environment:    h.Deps.Environment.String(),
 	}

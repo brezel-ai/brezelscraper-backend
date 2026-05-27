@@ -18,7 +18,6 @@ func TestGetVersion(t *testing.T) {
 		wantVersion    string
 		wantEnv        string
 		wantCommit     string
-		wantBuildDate  string
 		wantStatusCode int
 	}{
 		{
@@ -26,13 +25,11 @@ func TestGetVersion(t *testing.T) {
 			deps: handlers.Dependencies{
 				Version:     "v0.1.0-develop-abc1234",
 				GitCommit:   "abc1234567890abcdef1234567890abcdef123456",
-				BuildDate:   "2026-05-27T14:11:00Z",
 				Environment: appenv.Production,
 			},
 			wantVersion:    "0.1.0",
 			wantEnv:        "production",
 			wantCommit:     "abc1234",
-			wantBuildDate:  "2026-05-27T14:11:00Z",
 			wantStatusCode: http.StatusOK,
 		},
 		{
@@ -103,6 +100,14 @@ func TestGetVersion(t *testing.T) {
 			wantCommit:     "abc",
 			wantStatusCode: http.StatusOK,
 		},
+		{
+			name: "build_date not in response",
+			deps: handlers.Dependencies{
+				Version: "0.1.0",
+			},
+			wantVersion:    "0.1.0",
+			wantStatusCode: http.StatusOK,
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,8 +142,16 @@ func TestGetVersion(t *testing.T) {
 			if tt.wantCommit != "" && resp.GitCommitShort != tt.wantCommit {
 				t.Errorf("git_commit_short: expected %q, got %q", tt.wantCommit, resp.GitCommitShort)
 			}
-			if tt.wantBuildDate != "" && resp.BuildDate != tt.wantBuildDate {
-				t.Errorf("build_date: expected %q, got %q", tt.wantBuildDate, resp.BuildDate)
+
+			// Verify build_date is not exposed (OPSEC)
+			if tt.name == "build_date not in response" {
+				var raw map[string]any
+				if err := json.Unmarshal(body, &raw); err != nil {
+					t.Fatalf("could not parse raw JSON: %v", err)
+				}
+				if _, exists := raw["build_date"]; exists {
+					t.Error("build_date should not be in the version response (OPSEC)")
+				}
 			}
 		})
 	}
