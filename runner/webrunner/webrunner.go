@@ -184,7 +184,9 @@ func buildServerConfig(cfg *runner.Config, db *sql.DB, svc *web.Service, appCfg 
 		StripeAPIKey:               appCfg.Stripe.SecretKey,
 		StripeWebhookSecrets:       stripeWebhookSecrets,
 		StripeWebhookAllowedCIDRs:  stripeWebhookAllowedCIDRs,
-		Version:                    cfg.Version,
+		Version:                    resolveVersion(cfg.Version, appCfg.Build.Version),
+		GitCommit:                  appCfg.Build.GitCommit,
+		BuildDate:                  appCfg.Build.BuildDate,
 		InternalAddr:               appCfg.InternalAddr,
 		ResendAPIKey:               appCfg.ResendAPIKey,
 		Environment:                appCfg.AppEnv,
@@ -212,6 +214,21 @@ func buildServerConfig(cfg *runner.Config, db *sql.DB, svc *web.Service, appCfg 
 	)
 
 	return serverCfg, nil
+}
+
+// resolveVersion picks the best available version string. The ldflags value
+// (from main.go) defaults to "dev" when the binary is built without
+// -X main.version=..., which is the case for production Docker builds that
+// use ENV VERSION instead of ldflags. In that case, fall back to the VERSION
+// env var captured in BuildConfig at startup.
+func resolveVersion(ldflags, buildEnv string) string {
+	if ldflags != "" && ldflags != "dev" {
+		return ldflags
+	}
+	if buildEnv != "" {
+		return buildEnv
+	}
+	return ldflags
 }
 
 func New(cfg *runner.Config, appCfg *pkgconfig.Config, logger *slog.Logger) (runner.Runner, error) {

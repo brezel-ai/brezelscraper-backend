@@ -40,9 +40,15 @@ type Dependencies struct {
 	IntegrationRepo     models.IntegrationRepository
 	GoogleSheetsSvc     *googlesheets.Service
 	ConcurrentLimitSvc  *webservices.ConcurrentLimitService
-	// Version is the Git SHA injected at build time, used by the /health endpoint.
+	// Version is the application version, resolved at startup from build-time
+	// ldflags or the VERSION env var set by Docker build args.
 	Version string
-	Sender  notify.Sender // Support email sender; nil-safe
+	// GitCommit is the full Git commit SHA from build time (GIT_COMMIT env var).
+	GitCommit string
+	// BuildDate is the ISO-8601 build timestamp (BUILD_DATE env var).
+	BuildDate string
+
+	Sender notify.Sender // Support email sender; nil-safe
 	// Environment is parsed once at startup from APP_ENV. Handlers use this
 	// instead of reading os.Getenv at request time so that production-only
 	// behavior (e.g. cookie Secure flag — CWE-614) is consistent and
@@ -75,7 +81,7 @@ func NewHandlerGroup(deps Dependencies) *HandlerGroup {
 		Webhook:     &WebhookHandlers{Deps: deps},
 		Billing:     &BillingHandlers{Deps: deps},
 		Integration: NewIntegrationHandler(deps.IntegrationRepo, deps.Encryptor, deps.App, deps.GoogleSheetsSvc, deps.Environment, deps.GoogleConfig, deps.Logger),
-		Version:     NewVersionHandler(),
+		Version:     NewVersionHandler(deps),
 		Admin:       &AdminHandlers{Deps: deps},
 		Support:     &SupportHandlers{Deps: deps, Sender: deps.Sender},
 	}

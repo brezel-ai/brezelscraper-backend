@@ -162,13 +162,12 @@ type GoogleConfig struct {
 	CookiesFile  string `env:"COOKIES_FILE"`
 }
 
-// BuildConfig holds metadata injected at build time via -ldflags. These
-// vars have no common prefix, so envPrefix is not used here.
+// BuildConfig holds metadata injected at build time via Docker build args.
+// These vars have no common prefix, so envPrefix is not used here.
 type BuildConfig struct {
-	GitCommit   string `env:"GIT_COMMIT"`
-	BuildDate   string `env:"BUILD_DATE"`
-	Version     string `env:"VERSION"`
-	Environment string `env:"ENVIRONMENT" envDefault:"development"`
+	GitCommit string `env:"GIT_COMMIT"`
+	BuildDate string `env:"BUILD_DATE"`
+	Version   string `env:"VERSION"`
 }
 
 // appEnvType is the reflect.Type for appenv.Environment, used to register
