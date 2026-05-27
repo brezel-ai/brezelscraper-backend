@@ -1,9 +1,7 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
 )
 
 // VersionResponse contains build metadata and runtime information.
@@ -17,42 +15,58 @@ type VersionResponse struct {
 }
 
 // VersionHandler handles version information requests.
-type VersionHandler struct{}
+type VersionHandler struct {
+	Deps Dependencies
+}
 
-// NewVersionHandler creates a new version handler instance.
-func NewVersionHandler() *VersionHandler {
-	return &VersionHandler{}
+// NewVersionHandler creates a new version handler with injected dependencies.
+func NewVersionHandler(deps Dependencies) *VersionHandler {
+	return &VersionHandler{Deps: deps}
 }
 
 // GetVersion returns build metadata as JSON.
 // This endpoint does not require authentication.
-// Exposes: version, build_date, git_commit_short (7 chars), environment.
+// Exposes: version (clean semver), build_date, git_commit_short (7 chars), environment.
 // Excludes: full git_commit (source targeting), go_version (CVE exploits).
 func (h *VersionHandler) GetVersion(w http.ResponseWriter, r *http.Request) {
-	gitCommit := getEnvOrDefault("GIT_COMMIT", "")
-	shortCommit := gitCommit
+	v := cleanVersion(h.Deps.Version)
+	if v == "" {
+		v = "dev"
+	}
+
+	gitCommit := h.Deps.GitCommit
 	if len(gitCommit) > 7 {
-		shortCommit = gitCommit[:7]
+		gitCommit = gitCommit[:7]
 	}
 
 	response := VersionResponse{
-		Version:        getEnvOrDefault("VERSION", ""),
-		BuildDate:      getEnvOrDefault("BUILD_DATE", ""),
-		GitCommitShort: shortCommit,
-		Environment:    getEnvOrDefault("ENVIRONMENT", "development"),
+		Version:        v,
+		BuildDate:      h.Deps.BuildDate,
+		GitCommitShort: gitCommit,
+		Environment:    h.Deps.Environment.String(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-		return
-	}
+	renderJSON(w, http.StatusOK, response)
 }
 
-// getEnvOrDefault retrieves environment variable or returns default value.
-func getEnvOrDefault(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// cleanVersion extracts a clean semver string from a build version tag.
+// Strips the leading "v" prefix and any prerelease/metadata suffix after
+// the first hyphen (e.g. branch name or commit hash appended by CI).
+//
+//	"v0.1.0-develop-abc1234" -> "0.1.0"
+//	"0.1.0-dev"              -> "0.1.0"
+//	"0.1.0"                  -> "0.1.0"
+//	"dev"                    -> "dev"
+//	""                       -> ""
+func cleanVersion(raw string) string {
+	v := raw
+	if len(v) > 0 && v[0] == 'v' {
+		v = v[1:]
 	}
-	return defaultValue
+	for i, c := range v {
+		if c == '-' {
+			return v[:i]
+		}
+	}
+	return v
 }

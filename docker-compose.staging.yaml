@@ -17,7 +17,7 @@ services:
       - STRIPE_SUCCESS_URL=${STRIPE_SUCCESS_URL:-https://staging.brezel.ai/dashboard/credits?session_id={CHECKOUT_SESSION_ID}}
       - STRIPE_CANCEL_URL=${STRIPE_CANCEL_URL:-https://staging.brezel.ai/dashboard/credits}
       - DISABLE_TELEMETRY=${DISABLE_TELEMETRY:-0}
-      - ENVIRONMENT=${ENVIRONMENT:-staging}
+      - APP_ENV=staging
       - API_KEY_SERVER_SECRET=${API_KEY_SERVER_SECRET}
     command: [ "-web" ]
     extra_hosts:
@@ -53,7 +53,7 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://brezelscraper-backend:8080
-      - NEXT_PUBLIC_ENVIRONMENT=${ENVIRONMENT:-staging}
+      - NEXT_PUBLIC_ENVIRONMENT=staging
       - NODE_ENV=production
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
       - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}

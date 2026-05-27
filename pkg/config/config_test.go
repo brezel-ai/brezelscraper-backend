@@ -109,7 +109,6 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "", cfg.Build.GitCommit)
 	assert.Equal(t, "", cfg.Build.BuildDate)
 	assert.Equal(t, "", cfg.Build.Version)
-	assert.Equal(t, "development", cfg.Build.Environment)
 }
 
 func setupDevShort(t *testing.T) {
