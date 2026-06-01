@@ -48,7 +48,7 @@ type scrapeScenario struct {
 	minResults      int
 	assertMaxResult bool
 	expectImages    bool
-	expectReviews   bool // user_reviews_extended
+	expectReviews   bool // user_reviews
 }
 
 type e2eConfig struct {
@@ -93,9 +93,9 @@ type csvValidation struct {
 	TotalDataRows          int
 	RowsWithTitleAndLink   int
 	RowsWithNonEmptyImages int
-	// RowsWithNonEmptyReviewsExtended counts rows with user_reviews_extended != []/null/empty.
-	RowsWithNonEmptyReviewsExtended int
-	RequiredColumnsPresent          bool
+	// RowsWithNonEmptyReviews counts rows with user_reviews != []/null/empty.
+	RowsWithNonEmptyReviews int
+	RequiredColumnsPresent  bool
 }
 
 func TestAPIJobs_ScrapeParameterMatrix(t *testing.T) {
@@ -377,8 +377,8 @@ func TestAPIJobs_ScrapeParameterMatrix(t *testing.T) {
 			if scenario.expectImages && csvCheck.RowsWithNonEmptyImages == 0 {
 				t.Fatalf("job %s expected images in CSV but none of the rows had a non-empty images payload", jobID)
 			}
-			if scenario.expectReviews && csvCheck.RowsWithNonEmptyReviewsExtended == 0 {
-				t.Fatalf("job %s expected user_reviews_extended in CSV but none of the rows had a non-empty payload", jobID)
+			if scenario.expectReviews && csvCheck.RowsWithNonEmptyReviews == 0 {
+				t.Fatalf("job %s expected user_reviews in CSV but none of the rows had a non-empty payload", jobID)
 			}
 
 			if csvCheck.TotalDataRows != resultsPage.Total {
@@ -387,7 +387,7 @@ func TestAPIJobs_ScrapeParameterMatrix(t *testing.T) {
 
 			duration := time.Since(scenarioStart).Round(time.Second)
 			t.Logf(
-				"scenario_summary name=%s job_id=%s duration=%s depth=%v images=%v max_reviews=%v max_results=%v max_time=%v api_results=%d csv_rows=%d csv_rows_images=%d csv_rows_reviews_extended=%d",
+				"scenario_summary name=%s job_id=%s duration=%s depth=%v images=%v max_reviews=%v max_results=%v max_time=%v api_results=%d csv_rows=%d csv_rows_images=%d csv_rows_reviews=%d",
 				scenario.name,
 				jobID,
 				duration,
@@ -399,7 +399,7 @@ func TestAPIJobs_ScrapeParameterMatrix(t *testing.T) {
 				resultsPage.Total,
 				csvCheck.TotalDataRows,
 				csvCheck.RowsWithNonEmptyImages,
-				csvCheck.RowsWithNonEmptyReviewsExtended,
+				csvCheck.RowsWithNonEmptyReviews,
 			)
 
 			t.Logf(
@@ -1006,7 +1006,7 @@ func validateCSVContent(csvBytes []byte) (csvValidation, error) {
 		headerIndex[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	requiredColumns := []string{"input_id", "link", "title", "images", "user_reviews_extended"}
+	requiredColumns := []string{"input_id", "link", "title", "images", "user_reviews"}
 	requiredPresent := true
 	for _, column := range requiredColumns {
 		if _, ok := headerIndex[column]; !ok {
@@ -1024,12 +1024,12 @@ func validateCSVContent(csvBytes []byte) (csvValidation, error) {
 	titleIdx := headerIndex["title"]
 	linkIdx := headerIndex["link"]
 	imagesIdx := headerIndex["images"]
-	reviewsExtendedIdx := headerIndex["user_reviews_extended"]
+	reviewsIdx := headerIndex["user_reviews"]
 
 	dataRows := 0
 	rowsWithTitleAndLink := 0
 	rowsWithNonEmptyImages := 0
-	rowsWithNonEmptyReviewsExtended := 0
+	rowsWithNonEmptyReviews := 0
 
 	lineNumber := 1 // header
 	for {
@@ -1060,9 +1060,9 @@ func validateCSVContent(csvBytes []byte) (csvValidation, error) {
 		if imagesRaw != "" && imagesRaw != "[]" && imagesRaw != "null" {
 			rowsWithNonEmptyImages++
 		}
-		reviewsRaw := strings.TrimSpace(row[reviewsExtendedIdx])
+		reviewsRaw := strings.TrimSpace(row[reviewsIdx])
 		if reviewsRaw != "" && reviewsRaw != "[]" && reviewsRaw != "null" {
-			rowsWithNonEmptyReviewsExtended++
+			rowsWithNonEmptyReviews++
 		}
 	}
 
@@ -1071,12 +1071,12 @@ func validateCSVContent(csvBytes []byte) (csvValidation, error) {
 	}
 
 	return csvValidation{
-		HeaderColumns:                   header,
-		TotalDataRows:                   dataRows,
-		RowsWithTitleAndLink:            rowsWithTitleAndLink,
-		RowsWithNonEmptyImages:          rowsWithNonEmptyImages,
-		RowsWithNonEmptyReviewsExtended: rowsWithNonEmptyReviewsExtended,
-		RequiredColumnsPresent:          true,
+		HeaderColumns:           header,
+		TotalDataRows:           dataRows,
+		RowsWithTitleAndLink:    rowsWithTitleAndLink,
+		RowsWithNonEmptyImages:  rowsWithNonEmptyImages,
+		RowsWithNonEmptyReviews: rowsWithNonEmptyReviews,
+		RequiredColumnsPresent:  true,
 	}, nil
 }
 
@@ -1124,7 +1124,7 @@ func assertResultsQuality(t *testing.T, page paginatedResultsResponse, minResult
 		}
 
 		if expectReviews {
-			rawReviews, ok := result["user_reviews_extended"]
+			rawReviews, ok := result["user_reviews"]
 			if !ok || rawReviews == nil {
 				continue
 			}
@@ -1142,7 +1142,7 @@ func assertResultsQuality(t *testing.T, page paginatedResultsResponse, minResult
 		t.Fatalf("expected at least one result record with non-empty images, but none were found")
 	}
 	if expectReviews && resultsWithReviews == 0 {
-		t.Fatalf("expected at least one result record with non-empty user_reviews_extended, but none were found")
+		t.Fatalf("expected at least one result record with non-empty user_reviews, but none were found")
 	}
 }
 

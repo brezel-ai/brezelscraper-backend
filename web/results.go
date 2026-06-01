@@ -11,44 +11,43 @@ import (
 
 // EnhancedResult represents a single scraped result with all rich data
 type EnhancedResult struct {
-	ID                  int                      `json:"id"`
-	UserID              string                   `json:"user_id"`
-	JobID               string                   `json:"job_id"`
-	InputID             string                   `json:"input_id"`
-	Link                string                   `json:"link"`
-	Cid                 string                   `json:"cid"`
-	Title               string                   `json:"title"`
-	Categories          string                   `json:"categories"`
-	Category            string                   `json:"category"`
-	Address             string                   `json:"address"`
-	OpenHours           map[string][]string      `json:"open_hours,omitempty"`
-	PopularTimes        map[string]map[int]int   `json:"popular_times,omitempty"`
-	Website             string                   `json:"website"`
-	Phone               string                   `json:"phone"`
-	PlusCode            string                   `json:"plus_code"`
-	ReviewCount         int                      `json:"review_count"`
-	Rating              float64                  `json:"rating"`
-	ReviewsPerRating    map[int]int              `json:"reviews_per_rating,omitempty"`
-	Latitude            float64                  `json:"latitude"`
-	Longitude           float64                  `json:"longitude"`
-	Status              string                   `json:"status"`
-	Description         string                   `json:"description"`
-	ReviewsLink         string                   `json:"reviews_link"`
-	Thumbnail           string                   `json:"thumbnail"`
-	Timezone            string                   `json:"timezone"`
-	PriceRange          string                   `json:"price_range"`
-	DataID              string                   `json:"data_id"`
-	Images              []map[string]interface{} `json:"images,omitempty"`
-	Reservations        []map[string]interface{} `json:"reservations,omitempty"`
-	OrderOnline         []map[string]interface{} `json:"order_online,omitempty"`
-	Menu                map[string]interface{}   `json:"menu,omitempty"`
-	Owner               map[string]interface{}   `json:"owner,omitempty"`
-	CompleteAddress     map[string]interface{}   `json:"complete_address,omitempty"`
-	About               []map[string]interface{} `json:"about,omitempty"`
-	UserReviews         []map[string]interface{} `json:"user_reviews,omitempty"`
-	UserReviewsExtended []map[string]interface{} `json:"user_reviews_extended,omitempty"`
-	Emails              string                   `json:"emails"`
-	CreatedAt           time.Time                `json:"created_at"`
+	ID               int                      `json:"id"`
+	UserID           string                   `json:"user_id"`
+	JobID            string                   `json:"job_id"`
+	InputID          string                   `json:"input_id"`
+	Link             string                   `json:"link"`
+	Cid              string                   `json:"cid"`
+	Title            string                   `json:"title"`
+	Categories       string                   `json:"categories"`
+	Category         string                   `json:"category"`
+	Address          string                   `json:"address"`
+	OpenHours        map[string][]string      `json:"open_hours,omitempty"`
+	PopularTimes     map[string]map[int]int   `json:"popular_times,omitempty"`
+	Website          string                   `json:"website"`
+	Phone            string                   `json:"phone"`
+	PlusCode         string                   `json:"plus_code"`
+	ReviewCount      int                      `json:"review_count"`
+	Rating           float64                  `json:"rating"`
+	ReviewsPerRating map[int]int              `json:"reviews_per_rating,omitempty"`
+	Latitude         float64                  `json:"latitude"`
+	Longitude        float64                  `json:"longitude"`
+	Status           string                   `json:"status"`
+	Description      string                   `json:"description"`
+	ReviewsLink      string                   `json:"reviews_link"`
+	Thumbnail        string                   `json:"thumbnail"`
+	Timezone         string                   `json:"timezone"`
+	PriceRange       string                   `json:"price_range"`
+	DataID           string                   `json:"data_id"`
+	Images           []map[string]interface{} `json:"images,omitempty"`
+	Reservations     []map[string]interface{} `json:"reservations,omitempty"`
+	OrderOnline      []map[string]interface{} `json:"order_online,omitempty"`
+	Menu             map[string]interface{}   `json:"menu,omitempty"`
+	Owner            map[string]interface{}   `json:"owner,omitempty"`
+	CompleteAddress  map[string]interface{}   `json:"complete_address,omitempty"`
+	About            []map[string]interface{} `json:"about,omitempty"`
+	UserReviews      []map[string]interface{} `json:"user_reviews,omitempty"`
+	Emails           string                   `json:"emails"`
+	CreatedAt        time.Time                `json:"created_at"`
 }
 
 // NullableJSON is a helper type for handling nullable JSONB fields
@@ -146,7 +145,6 @@ func (s *Server) getEnhancedJobResults(ctx context.Context, jobID string) ([]Enh
 			COALESCE(complete_address, '{}') as complete_address,
 			COALESCE(about, '[]') as about,
 			COALESCE(user_reviews, '[]') as user_reviews,
-			COALESCE(user_reviews_extended, '[]') as user_reviews_extended,
 			COALESCE(emails, '') as emails,
 			COALESCE(created_at, NOW()) as created_at
 		FROM results 
@@ -164,7 +162,7 @@ func (s *Server) getEnhancedJobResults(ctx context.Context, jobID string) ([]Enh
 	for rows.Next() {
 		var r EnhancedResult
 		var openHours, popularTimes, reviewsPerRating, menu, owner, completeAddress NullableJSON
-		var images, reservations, orderOnline, about, userReviews, userReviewsExtended NullableJSON
+		var images, reservations, orderOnline, about, userReviews NullableJSON
 
 		err := rows.Scan(
 			&r.ID, &r.UserID, &r.JobID, &r.InputID, &r.Link, &r.Cid, &r.Title,
@@ -176,7 +174,7 @@ func (s *Server) getEnhancedJobResults(ctx context.Context, jobID string) ([]Enh
 			&r.Description, &r.ReviewsLink, &r.Thumbnail, &r.Timezone, &r.PriceRange,
 			&r.DataID,
 			&images, &reservations, &orderOnline, &menu, &owner, &completeAddress,
-			&about, &userReviews, &userReviewsExtended,
+			&about, &userReviews,
 			&r.Emails, &r.CreatedAt,
 		)
 		if err != nil {
@@ -293,17 +291,6 @@ func (s *Server) getEnhancedJobResults(ctx context.Context, jobID string) ([]Enh
 				for i, review := range reviewSlice {
 					if reviewMap, ok := review.(map[string]interface{}); ok {
 						r.UserReviews[i] = reviewMap
-					}
-				}
-			}
-		}
-
-		if userReviewsExtended.Valid && userReviewsExtended.Data != nil {
-			if reviewSlice, ok := userReviewsExtended.Data.([]interface{}); ok {
-				r.UserReviewsExtended = make([]map[string]interface{}, len(reviewSlice))
-				for i, review := range reviewSlice {
-					if reviewMap, ok := review.(map[string]interface{}); ok {
-						r.UserReviewsExtended[i] = reviewMap
 					}
 				}
 			}
@@ -446,7 +433,6 @@ func (s *Server) getEnhancedJobResultsPaginated(ctx context.Context, jobID strin
 			COALESCE(complete_address, '{}') as complete_address,
 			COALESCE(about, '[]') as about,
 			COALESCE(user_reviews, '[]') as user_reviews,
-			COALESCE(user_reviews_extended, '[]') as user_reviews_extended,
 			COALESCE(emails, '') as emails,
 			COALESCE(created_at, NOW()) as created_at
 		FROM results 
@@ -465,7 +451,7 @@ func (s *Server) getEnhancedJobResultsPaginated(ctx context.Context, jobID strin
 	for rows.Next() {
 		var r EnhancedResult
 		var openHours, popularTimes, reviewsPerRating, menu, owner, completeAddress NullableJSON
-		var images, reservations, orderOnline, about, userReviews, userReviewsExtended NullableJSON
+		var images, reservations, orderOnline, about, userReviews NullableJSON
 
 		err := rows.Scan(
 			&r.ID, &r.UserID, &r.JobID, &r.InputID, &r.Link, &r.Cid, &r.Title,
@@ -477,7 +463,7 @@ func (s *Server) getEnhancedJobResultsPaginated(ctx context.Context, jobID strin
 			&r.Description, &r.ReviewsLink, &r.Thumbnail, &r.Timezone, &r.PriceRange,
 			&r.DataID,
 			&images, &reservations, &orderOnline, &menu, &owner, &completeAddress,
-			&about, &userReviews, &userReviewsExtended,
+			&about, &userReviews,
 			&r.Emails, &r.CreatedAt,
 		)
 		if err != nil {
@@ -592,17 +578,6 @@ func (s *Server) getEnhancedJobResultsPaginated(ctx context.Context, jobID strin
 				for i, review := range reviewSlice {
 					if reviewMap, ok := review.(map[string]interface{}); ok {
 						r.UserReviews[i] = reviewMap
-					}
-				}
-			}
-		}
-
-		if userReviewsExtended.Valid && userReviewsExtended.Data != nil {
-			if reviewSlice, ok := userReviewsExtended.Data.([]interface{}); ok {
-				r.UserReviewsExtended = make([]map[string]interface{}, len(reviewSlice))
-				for i, review := range reviewSlice {
-					if reviewMap, ok := review.(map[string]interface{}); ok {
-						r.UserReviewsExtended[i] = reviewMap
 					}
 				}
 			}

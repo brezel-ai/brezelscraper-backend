@@ -213,7 +213,6 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
             COALESCE(complete_address, '{}') as complete_address,
             COALESCE(about, '[]') as about,
             COALESCE(user_reviews, '[]') as user_reviews,
-            COALESCE(user_reviews_extended, '[]') as user_reviews_extended,
             COALESCE(emails, '') as emails,
             COALESCE(created_at, NOW()) as created_at
         FROM results
@@ -232,7 +231,7 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
 	for rows.Next() {
 		var r models.EnhancedResult
 		var openHours, popularTimes, reviewsPerRating, menu, owner, completeAddress NullableJSON
-		var images, reservations, orderOnline, about, userReviews, userReviewsExtended NullableJSON
+		var images, reservations, orderOnline, about, userReviews NullableJSON
 		if err := rows.Scan(
 			&r.ID, &r.UserID, &r.JobID, &r.InputID, &r.Link, &r.Cid, &r.Title,
 			&r.Categories, &r.Category, &r.Address,
@@ -243,7 +242,7 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
 			&r.Description, &r.ReviewsLink, &r.Thumbnail, &r.Timezone, &r.PriceRange,
 			&r.DataID,
 			&images, &reservations, &orderOnline, &menu, &owner, &completeAddress,
-			&about, &userReviews, &userReviewsExtended,
+			&about, &userReviews,
 			&r.Emails, &r.CreatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan enhanced result: %w", err)
@@ -353,17 +352,6 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
 				for i, review := range reviewSlice {
 					if reviewMap, ok := review.(map[string]interface{}); ok {
 						r.UserReviews[i] = reviewMap
-					}
-				}
-			}
-		}
-
-		if userReviewsExtended.Valid && userReviewsExtended.Data != nil {
-			if reviewSlice, ok := userReviewsExtended.Data.([]interface{}); ok {
-				r.UserReviewsExtended = make([]map[string]interface{}, len(reviewSlice))
-				for i, review := range reviewSlice {
-					if reviewMap, ok := review.(map[string]interface{}); ok {
-						r.UserReviewsExtended[i] = reviewMap
 					}
 				}
 			}

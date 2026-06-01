@@ -130,7 +130,6 @@ type Entry struct {
 	CompleteAddress         Address                `json:"complete_address"`
 	About                   []About                `json:"about"`
 	UserReviews             []Review               `json:"user_reviews"`
-	UserReviewsExtended     []Review               `json:"user_reviews_extended"`
 	Emails                  []string               `json:"emails"`
 }
 
@@ -226,7 +225,6 @@ func (e *Entry) CsvHeaders() []string {
 		"complete_address",
 		"about",
 		"user_reviews",
-		"user_reviews_extended",
 		"emails",
 	}
 }
@@ -264,13 +262,12 @@ func (e *Entry) CsvRow() []string {
 		stringify(e.CompleteAddress),
 		stringify(e.About),
 		stringify(e.UserReviews),
-		stringify(e.UserReviewsExtended),
 		stringSliceToString(e.Emails),
 	}
 }
 
 // AddExtraReviews parses review pages and appends successfully-parsed reviews
-// to e.UserReviewsExtended. Parse failures on individual pages are logged via
+// to e.UserReviews. Parse failures on individual pages are logged via
 // the ctx-bound scrapemate logger carrying place context from j (place_job_id,
 // search_job_id, place_url) plus user_id and the user-facing job_id from
 // j.UserID / j.UserJobID (propagated by the webrunner via WithPlaceJobUserContext,
@@ -294,7 +291,7 @@ func (e *Entry) AddExtraReviews(ctx context.Context, j *PlaceJob, pages [][]byte
 			scrapemate.GetLoggerFromContext(ctx).Warn("review_page_parse_failed", args...)
 			continue
 		}
-		e.UserReviewsExtended = append(e.UserReviewsExtended, reviews...)
+		e.UserReviews = append(e.UserReviews, reviews...)
 	}
 }
 
@@ -594,8 +591,9 @@ func EntryFromJSON(raw []byte, reviewCountOnly ...bool) (entry Entry, err error)
 		5: int(getNthElementAndCast[float64](darray, 175, 3, 4)),
 	}
 
-	reviewsI := getNthElementAndCast[[]any](darray, 175, 9, 0, 0)
-	entry.UserReviews = make([]Review, 0, len(reviewsI))
+	// entry.UserReviews is populated later by AddExtraReviews from the
+	// paginated review endpoints; the initial place-detail payload is not
+	// parsed for reviews here.
 
 	return entry, nil
 }
