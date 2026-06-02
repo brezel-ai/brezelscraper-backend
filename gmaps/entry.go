@@ -591,9 +591,7 @@ func EntryFromJSON(raw []byte, reviewCountOnly ...bool) (entry Entry, err error)
 		5: int(getNthElementAndCast[float64](darray, 175, 3, 4)),
 	}
 
-	// entry.UserReviews is populated later by AddExtraReviews from the
-	// paginated review endpoints; the initial place-detail payload is not
-	// parsed for reviews here.
+	entry.UserReviews = []Review{}
 
 	return entry, nil
 }
