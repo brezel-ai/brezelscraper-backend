@@ -73,8 +73,27 @@ type Config struct {
 	ResendAPIKey   string   `env:"RESEND_API_KEY"`
 	Proxies        []string `env:"PROXIES" envSeparator:","`
 
+	// ── MCP server ──────────────────────────────────────────────────
+	MCP MCPConfig `envPrefix:"MCP_"`
+
 	// ── Build metadata ───────────────────────────────────────────────
 	Build BuildConfig
+}
+
+// MCPConfig holds settings for the standalone Model Context Protocol server
+// binary (cmd/mcp-server). Variables share the MCP_ prefix.
+//
+// Clerk OAuth fields stay empty until Chunk 4 wires them; ClerkOAuthEnabled
+// is the gate the binary checks before attempting JWKS fetch.
+type MCPConfig struct {
+	ListenAddr     string   `env:"LISTEN_ADDR" envDefault:":3001"`
+	PublicURL      string   `env:"PUBLIC_URL" envDefault:"https://mcp.brezelscraper.com"`
+	AllowedOrigins []string `env:"ALLOWED_ORIGINS" envSeparator:"," envDefault:"https://app.brezelscraper.com,https://claude.ai,https://claude.com,https://cursor.so"`
+
+	ClerkOAuthEnabled bool   `env:"CLERK_OAUTH_ENABLED" envDefault:"false"`
+	ClerkIssuer       string `env:"CLERK_ISSUER"`
+	ClerkJWKSURL      string `env:"CLERK_JWKS_URL"`
+	ClerkAudience     string `env:"CLERK_AUDIENCE"`
 }
 
 // LogConfig holds log-sink configuration. These vars all share the LOG_
@@ -214,6 +233,7 @@ func Load() (*Config, error) {
 	cfg.AllowedOrigins = trimAndDropEmpty(cfg.AllowedOrigins)
 	cfg.Proxies = trimAndDropEmpty(cfg.Proxies)
 	cfg.Stripe.WebhookAllowedCIDRs = trimAndDropEmpty(cfg.Stripe.WebhookAllowedCIDRs)
+	cfg.MCP.AllowedOrigins = trimAndDropEmpty(cfg.MCP.AllowedOrigins)
 
 	if validateErr := cfg.Validate(); validateErr != nil {
 		return nil, validateErr
