@@ -10,6 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gosom/google-maps-scraper/cmd/mcp-server/tools"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func main() {
@@ -17,8 +20,20 @@ func main() {
 
 	addr := envOr("MCP_LISTEN_ADDR", ":3001")
 
+	mcpServer := mcp.NewServer(&mcp.Implementation{
+		Name:    "brezel-mcp",
+		Version: "0.1.0",
+	}, nil)
+	mcp.AddTool(mcpServer, tools.PingTool(), tools.Ping)
+
+	streamableHandler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+		return mcpServer
+	}, nil)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.Handle("/mcp", streamableHandler)
+	mux.Handle("/mcp/", streamableHandler)
 
 	srv := &http.Server{
 		Addr:              addr,
