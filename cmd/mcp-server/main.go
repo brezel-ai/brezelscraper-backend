@@ -15,14 +15,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	serverName    = "brezel-mcp"
+	serverVersion = "0.1.0"
+)
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	addr := envOr("MCP_LISTEN_ADDR", ":3001")
 
 	mcpServer := mcp.NewServer(&mcp.Implementation{
-		Name:    "brezel-mcp",
-		Version: "0.1.0",
+		Name:    serverName,
+		Version: serverVersion,
 	}, nil)
 	mcp.AddTool(mcpServer, tools.PingTool(), tools.Ping)
 
@@ -35,10 +40,17 @@ func main() {
 	mux.Handle("/mcp", streamableHandler)
 	mux.Handle("/mcp/", streamableHandler)
 
+	// Streamable HTTP uses long-lived SSE responses, so WriteTimeout is
+	// intentionally generous; ReadHeaderTimeout/IdleTimeout/MaxHeaderBytes
+	// match the house style at web/web.go.
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -54,7 +66,9 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown_error", "err", err)
+	}
 	slog.Info("mcp-server stopped")
 }
 
