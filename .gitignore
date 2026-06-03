@@ -14,6 +14,7 @@ gmapsdata/*.json
 
 # Binary files
 google-maps-scraper
+mcp-server
 *.exe
 *.exe~
 *.dll
