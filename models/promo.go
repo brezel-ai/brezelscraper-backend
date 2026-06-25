@@ -49,4 +49,5 @@ var (
 	ErrPromoExhausted       = errors.New("promo code fully redeemed")
 	ErrPromoAlreadyRedeemed = errors.New("promo code already redeemed by this user")
 	ErrPromoNewAccountsOnly = errors.New("promo code is for new accounts only")
+	ErrPromoCodeExists      = errors.New("promo code already exists")
 )
