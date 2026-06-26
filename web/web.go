@@ -9,6 +9,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -32,6 +35,17 @@ import (
 
 //go:embed static
 var static embed.FS
+
+// promoRateLimitPerMin reads the redeem rate limit (requests/min) once at
+// startup. Env PROMO_RATE_LIMIT_PER_MIN overrides; default 5.
+func promoRateLimitPerMin() float64 {
+	if v := strings.TrimSpace(os.Getenv("PROMO_RATE_LIMIT_PER_MIN")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			return f
+		}
+	}
+	return 5
+}
 
 type Server struct {
 	tmpl           map[string]*template.Template
@@ -206,6 +220,11 @@ func New(cfg ServerConfig) (*Server, error) {
 	if ans.db != nil {
 		deps.ConcurrentLimitSvc = webservices.NewConcurrentLimitService(ans.db)
 	}
+	if ans.db != nil {
+		promoRepo := postgres.NewPromoRepository(ans.db, ans.logger)
+		promoCfg := config.New(ans.db) // env -> system_config -> default
+		deps.PromoSvc = webservices.NewPromoService(promoRepo, promoCfg, ans.logger)
+	}
 
 	// Support email sender: Resend if configured, log fallback otherwise
 	var supportSender notify.Sender
@@ -325,6 +344,18 @@ func New(cfg ServerConfig) (*Server, error) {
 	jobIdempotency := webmiddleware.Idempotency(postgres.NewIdempotencyRepository(ans.db), ans.logger)
 	apiRouter.HandleFunc("/jobs", hg.API.ListJobs).Methods(http.MethodGet)
 	apiRouter.Handle("/jobs", jobIdempotency(jobCreateLimiter(http.HandlerFunc(hg.API.Scrape)))).Methods(http.MethodPost)
+
+	// Promo redemption: session-only (API keys rejected in-handler), rate-limited
+	// to blunt code enumeration, idempotent (reuses the jobs Idempotency mw).
+	// Gated on the DB (not billingSvc): redemption only needs the promo tables,
+	// not Stripe.
+	if ans.db != nil {
+		redeemLimiter := webmiddleware.PerUserRateLimit(rate.Limit(promoRateLimitPerMin()/60.0), 5)
+		apiRouter.Handle("/credits/redeem",
+			jobIdempotency(redeemLimiter(http.HandlerFunc(hg.Billing.RedeemPromoCode))),
+		).Methods(http.MethodPost)
+	}
+
 	apiRouter.HandleFunc("/jobs/{id}", hg.API.GetJob).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/jobs/{id}", hg.API.DeleteJob).Methods(http.MethodDelete)
 	apiRouter.HandleFunc("/jobs/{id}/cancel", hg.API.CancelJob).Methods(http.MethodPost)
@@ -386,6 +417,12 @@ func New(cfg ServerConfig) (*Server, error) {
 	adminRouter.HandleFunc("/jobs", hg.Admin.CreateJob).Methods(http.MethodPost)
 	adminRouter.HandleFunc("/jobs", hg.Admin.GetJobs).Methods(http.MethodGet)
 	adminRouter.HandleFunc("/jobs/{id}/cancel", hg.Admin.CancelJob).Methods(http.MethodPost)
+
+	// Promo-code administration. Inherits RequireRole(admin) from adminRouter;
+	// each handler also re-checks the admin session as defense-in-depth.
+	adminRouter.HandleFunc("/promo-codes", hg.Admin.CreatePromoCode).Methods(http.MethodPost)
+	adminRouter.HandleFunc("/promo-codes", hg.Admin.ListPromoCodes).Methods(http.MethodGet)
+	adminRouter.HandleFunc("/promo-codes/{id}", hg.Admin.UpdatePromoCode).Methods(http.MethodPatch)
 
 	// Webhook endpoints are public provider callbacks, not customer API routes.
 	// Keep them out of the /api/v1 customer namespace and give them a dedicated
