@@ -40,6 +40,7 @@ type Dependencies struct {
 	IntegrationRepo     models.IntegrationRepository
 	GoogleSheetsSvc     *googlesheets.Service
 	ConcurrentLimitSvc  *webservices.ConcurrentLimitService
+	PromoSvc            *webservices.PromoService // nil-safe; promo routes 503 when nil
 	// Version is the application version, resolved at startup from build-time
 	// ldflags or the VERSION env var set by Docker build args.
 	Version string
