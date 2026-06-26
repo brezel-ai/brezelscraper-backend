@@ -448,7 +448,7 @@ func New(cfg ServerConfig) (*Server, error) {
 	// H4: accepts a slice so the previous secret stays valid during rotation.
 	switch {
 	case len(cfg.ClerkWebhookSigningSecrets) > 0 && provisioningSvc != nil:
-		clerkHandler, err := webhandlers.NewClerkWebhookHandler(cfg.PgDB, cfg.ClerkWebhookSigningSecrets, provisioningSvc, ans.logger)
+		clerkHandler, err := webhandlers.NewClerkWebhookHandler(cfg.PgDB, cfg.ClerkWebhookSigningSecrets, provisioningSvc, deps.PromoSvc, ans.logger)
 		if err != nil {
 			return nil, fmt.Errorf("clerk webhook handler init: %w", err)
 		}

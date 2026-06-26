@@ -17,6 +17,7 @@ import (
 
 	"github.com/gosom/google-maps-scraper/postgres"
 	"github.com/gosom/google-maps-scraper/web/auth"
+	webservices "github.com/gosom/google-maps-scraper/web/services"
 )
 
 // Provisioner is the narrow interface the Clerk webhook handler depends on.
@@ -35,6 +36,7 @@ type ClerkWebhookHandler struct {
 	db           *sql.DB
 	verifiers    []*svix.Webhook
 	provisioning Provisioner
+	promoSvc     *webservices.PromoService
 	logger       *slog.Logger
 }
 
@@ -54,7 +56,7 @@ const clerkWebhookMinKeyBytes = 16
 // The caller (web/web.go) should treat a returned error as a fatal startup
 // error when any CLERK_WEBHOOK_SIGNING_SECRET* var is set; when both vars
 // are empty the caller skips construction entirely (route is not mounted).
-func NewClerkWebhookHandler(db *sql.DB, signingSecrets []string, provisioning Provisioner, logger *slog.Logger) (*ClerkWebhookHandler, error) {
+func NewClerkWebhookHandler(db *sql.DB, signingSecrets []string, provisioning Provisioner, promoSvc *webservices.PromoService, logger *slog.Logger) (*ClerkWebhookHandler, error) {
 	if len(signingSecrets) == 0 {
 		return nil, errors.New("clerk_webhook: no signing secrets provided")
 	}
@@ -86,6 +88,7 @@ func NewClerkWebhookHandler(db *sql.DB, signingSecrets []string, provisioning Pr
 		db:           db,
 		verifiers:    verifiers,
 		provisioning: provisioning,
+		promoSvc:     promoSvc,
 		logger:       logger,
 	}, nil
 }
@@ -125,6 +128,10 @@ type clerkUserCreatedData struct {
 	PhoneNumbers     []json.RawMessage `json:"phone_numbers"`
 	Web3Wallets      []json.RawMessage `json:"web3_wallets"`
 	ExternalAccounts []json.RawMessage `json:"external_accounts"`
+	// Promo/signup-link code carried via Clerk unsafeMetadata at sign-up.
+	UnsafeMetadata struct {
+		PromoCode string `json:"promoCode"`
+	} `json:"unsafe_metadata"`
 }
 
 func (h *ClerkWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +313,23 @@ func (h *ClerkWebhookHandler) handleUserCreated(ctx context.Context, msgID strin
 
 	h.logger.Info("clerk_webhook_user_provisioned",
 		slog.String("svix_id", msgID), slog.String("user_id", data.ID))
+
+	// Signup-link promo: redeem AFTER provisioning so the user row + signup
+	// bonus already exist. Non-fatal — a missing/invalid/expired/exhausted code
+	// must never fail signup (mirrors the signup-bonus policy). Idempotent
+	// across Svix redeliveries via the unique (user_id, promo_code_id) index.
+	if code := strings.TrimSpace(data.UnsafeMetadata.PromoCode); code != "" && h.promoSvc != nil {
+		if _, err := h.promoSvc.Redeem(ctx, data.ID, code, "signup_link"); err != nil {
+			// Non-fatal: a bad/expired/exhausted code must never fail signup.
+			h.logger.Info("clerk_webhook_promo_redeem_skipped",
+				slog.String("svix_id", msgID), slog.String("user_id", data.ID),
+				slog.String("code", strings.ToUpper(code)), slog.String("reason", err.Error()))
+		} else {
+			h.logger.Info("clerk_webhook_promo_redeemed",
+				slog.String("svix_id", msgID), slog.String("user_id", data.ID),
+				slog.String("code", strings.ToUpper(code)))
+		}
+	}
 	return false
 }
 

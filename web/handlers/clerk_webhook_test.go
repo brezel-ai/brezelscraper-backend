@@ -22,6 +22,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/gosom/google-maps-scraper/postgres"
+	webservices "github.com/gosom/google-maps-scraper/web/services"
 )
 
 func TestMain(m *testing.M) {
@@ -115,7 +116,9 @@ func openClerkTestDB(t *testing.T) *sql.DB {
 // Panics if construction fails (misconfigured test).
 func newTestClerkHandler(t *testing.T, db *sql.DB, prov Provisioner) *ClerkWebhookHandler {
 	t.Helper()
-	h, err := NewClerkWebhookHandler(db, []string{testClerkSecret}, prov, slog.Default())
+	// promoSvc is nil here: these tests exercise verification/provisioning only.
+	// The signup-link promo path is covered by TestHandleUserCreated_RedeemsSignupLinkPromo.
+	h, err := NewClerkWebhookHandler(db, []string{testClerkSecret}, prov, nil, slog.Default())
 	if err != nil {
 		t.Fatalf("NewClerkWebhookHandler: %v", err)
 	}
@@ -610,5 +613,180 @@ func TestClerkWebhook_DedupesByMessageID_Concurrent(t *testing.T) {
 	count, _, _ := fp.snapshot()
 	if count != 1 {
 		t.Errorf("provisioner must be called exactly once under concurrent dedupe, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test — Signup-link promo redemption from user.created (Integration, DB-backed)
+//
+// Exercises handleUserCreated directly (bypassing Svix verification + dedupe,
+// which the tests above already cover) with a REAL UserProvisioning + REAL
+// PromoService so the user row, signup bonus, and promo credit all hit Postgres.
+// Proves:
+//  1. A user.created payload carrying unsafe_metadata.promoCode redeems it
+//     AFTER provisioning (source='signup_link'), writing exactly one
+//     promo_redemptions row + a reference_type='promo' ledger row.
+//  2. Re-running the SAME payload (Svix redelivery) is idempotent — still
+//     exactly one redemption (the unique (user_id, promo_code_id) index), and
+//     the handler never reports retry.
+//  3. A payload with NO promoCode provisions the user but writes no redemption.
+//
+// DB-backed was chosen over a spy because the existing harness already runs
+// DB-gated integration tests against PG_TEST_DSN, and a real redemption is the
+// only way to prove idempotency through the unique index and the non-fatal
+// "already redeemed" path on redelivery.
+// ---------------------------------------------------------------------------
+
+// seedSignupPromoCode inserts an active, uncapped promo code and registers
+// FK-ordered cleanup. Returns the code id.
+func seedSignupPromoCode(t *testing.T, db *sql.DB, code string, amount float64) string {
+	t.Helper()
+	ctx := context.Background()
+	id := uuid.NewString()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO promo_codes
+			(id, code, amount, status, max_redemptions, current_redemptions,
+			 new_accounts_only, valid_from, valid_to)
+		VALUES ($1, $2, $3, 'active', NULL, 0, false, NOW() - INTERVAL '1 hour', NULL)`,
+		id, code, amount)
+	if err != nil {
+		t.Fatalf("seed promo code %q: %v", code, err)
+	}
+	t.Cleanup(func() {
+		// promo_code_id is ON DELETE RESTRICT: clear redemptions before the code.
+		_, _ = db.ExecContext(ctx, `DELETE FROM promo_redemptions WHERE promo_code_id = $1`, id)
+		_, _ = db.ExecContext(ctx, `DELETE FROM promo_codes WHERE id = $1`, id)
+	})
+	return id
+}
+
+// cleanupProvisionedUser deletes a provisioned user and its ledger/redemption
+// rows in FK-safe order (promo_redemptions -> credit_transactions -> users).
+func cleanupProvisionedUser(t *testing.T, db *sql.DB, userID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = db.ExecContext(ctx, `DELETE FROM promo_redemptions WHERE user_id = $1`, userID)
+		_, _ = db.ExecContext(ctx, `DELETE FROM credit_transactions WHERE user_id = $1`, userID)
+		_, _ = db.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, userID)
+	})
+}
+
+// userCreatedRaw builds the inner `data` object of a Clerk user.created event.
+// When promoCode is non-empty it is carried via unsafe_metadata.promoCode.
+func userCreatedRaw(t *testing.T, userID, email, promoCode string) json.RawMessage {
+	t.Helper()
+	emailAddrID := "idn_" + uuid.NewString()
+	data := map[string]interface{}{
+		"id":                       userID,
+		"primary_email_address_id": emailAddrID,
+		"email_addresses": []map[string]interface{}{
+			{"id": emailAddrID, "email_address": email},
+		},
+	}
+	if promoCode != "" {
+		data["unsafe_metadata"] = map[string]interface{}{"promoCode": promoCode}
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal user.created data: %v", err)
+	}
+	return raw
+}
+
+// newRealClerkHandler builds a handler wired to a REAL UserProvisioning (nil
+// billing — Stripe is skipped) and a REAL PromoService, both backed by db.
+func newRealClerkHandler(t *testing.T, db *sql.DB) *ClerkWebhookHandler {
+	t.Helper()
+	prov := webservices.NewUserProvisioning(db, postgres.NewUserRepository(db), nil, slog.Default())
+	promoSvc := webservices.NewPromoService(postgres.NewPromoRepository(db, slog.Default()), nil, slog.Default())
+	h, err := NewClerkWebhookHandler(db, []string{testClerkSecret}, prov, promoSvc, slog.Default())
+	if err != nil {
+		t.Fatalf("NewClerkWebhookHandler: %v", err)
+	}
+	return h
+}
+
+func TestHandleUserCreated_RedeemsSignupLinkPromo(t *testing.T) {
+	t.Parallel()
+	db := openClerkTestDB(t)
+	h := newRealClerkHandler(t, db)
+	ctx := context.Background()
+
+	const amount = 5.0
+	code := "SIGNUP_" + uuid.NewString()[:8]
+	promoID := seedSignupPromoCode(t, db, code, amount)
+
+	// --- Positive: payload carries the promo code -> redeemed after provisioning.
+	userID := "user_promo_" + uuid.NewString()
+	email := "promo+" + uuid.NewString() + "@example.com"
+	cleanupProvisionedUser(t, db, userID)
+	raw := userCreatedRaw(t, userID, email, code)
+
+	if retry := h.handleUserCreated(ctx, "msg_"+uuid.NewString(), raw); retry {
+		t.Fatalf("handleUserCreated returned retry=true on the success path")
+	}
+
+	// Exactly one redemption row, source='signup_link'.
+	var redCount int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM promo_redemptions WHERE user_id = $1 AND promo_code_id = $2 AND source = 'signup_link'`,
+		userID, promoID).Scan(&redCount); err != nil {
+		t.Fatalf("count promo_redemptions: %v", err)
+	}
+	if redCount != 1 {
+		t.Fatalf("promo_redemptions(signup_link) rows = %d, want 1", redCount)
+	}
+
+	// A reference_type='promo' ledger row exists.
+	var promoLedger int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM credit_transactions WHERE user_id = $1 AND reference_type = 'promo'`,
+		userID).Scan(&promoLedger); err != nil {
+		t.Fatalf("count promo ledger: %v", err)
+	}
+	if promoLedger != 1 {
+		t.Errorf("credit_transactions(promo) rows = %d, want 1", promoLedger)
+	}
+
+	// --- Idempotent: redeliver the SAME payload -> still exactly one redemption.
+	if retry := h.handleUserCreated(ctx, "msg_"+uuid.NewString(), raw); retry {
+		t.Fatalf("handleUserCreated returned retry=true on redelivery")
+	}
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM promo_redemptions WHERE user_id = $1 AND promo_code_id = $2`,
+		userID, promoID).Scan(&redCount); err != nil {
+		t.Fatalf("count promo_redemptions (redelivery): %v", err)
+	}
+	if redCount != 1 {
+		t.Errorf("after redelivery promo_redemptions rows = %d, want 1 (idempotent)", redCount)
+	}
+
+	// --- Negative: a fresh user with NO promoCode provisions but redeems nothing.
+	noCodeUserID := "user_nocode_" + uuid.NewString()
+	noCodeEmail := "nocode+" + uuid.NewString() + "@example.com"
+	cleanupProvisionedUser(t, db, noCodeUserID)
+	noCodeRaw := userCreatedRaw(t, noCodeUserID, noCodeEmail, "")
+
+	if retry := h.handleUserCreated(ctx, "msg_"+uuid.NewString(), noCodeRaw); retry {
+		t.Fatalf("handleUserCreated returned retry=true on the no-code success path")
+	}
+
+	var userExists bool
+	if err := db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)`, noCodeUserID).Scan(&userExists); err != nil {
+		t.Fatalf("check user exists: %v", err)
+	}
+	if !userExists {
+		t.Errorf("expected no-code user to be provisioned")
+	}
+
+	var noCodeRed int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM promo_redemptions WHERE user_id = $1`, noCodeUserID).Scan(&noCodeRed); err != nil {
+		t.Fatalf("count no-code redemptions: %v", err)
+	}
+	if noCodeRed != 0 {
+		t.Errorf("no-code user redemptions = %d, want 0", noCodeRed)
 	}
 }
