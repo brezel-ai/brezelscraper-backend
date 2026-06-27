@@ -93,6 +93,9 @@ type ServerConfig struct {
 	// AllowedOrigins is read once from pkg/config at startup. Eliminates
 	// the direct os.Getenv("ALLOWED_ORIGINS") call inside web.New.
 	AllowedOrigins []string
+	// PromoRateLimitPerMin is read once from pkg/config at startup. Eliminates
+	// the direct os.Getenv("PROMO_RATE_LIMIT_PER_MIN") call inside web.New.
+	PromoRateLimitPerMin float64
 	// InternalHandlers is an extension point for the internal listener.
 	// Callers populate this with diagnostic endpoints they want exposed on
 	// 9090 (alongside /health and /metrics). The webrunner registers
@@ -205,6 +208,11 @@ func New(cfg ServerConfig) (*Server, error) {
 	}
 	if ans.db != nil {
 		deps.ConcurrentLimitSvc = webservices.NewConcurrentLimitService(ans.db)
+	}
+	if ans.db != nil {
+		promoRepo := postgres.NewPromoRepository(ans.db, ans.logger)
+		promoCfg := config.New(ans.db) // env -> system_config -> default
+		deps.PromoSvc = webservices.NewPromoService(promoRepo, promoCfg, ans.logger)
 	}
 
 	// Support email sender: Resend if configured, log fallback otherwise
@@ -325,6 +333,22 @@ func New(cfg ServerConfig) (*Server, error) {
 	jobIdempotency := webmiddleware.Idempotency(postgres.NewIdempotencyRepository(ans.db), ans.logger)
 	apiRouter.HandleFunc("/jobs", hg.API.ListJobs).Methods(http.MethodGet)
 	apiRouter.Handle("/jobs", jobIdempotency(jobCreateLimiter(http.HandlerFunc(hg.API.Scrape)))).Methods(http.MethodPost)
+
+	// Promo redemption: session-only (API keys rejected in-handler), rate-limited
+	// to blunt code enumeration, idempotent (reuses the jobs Idempotency mw).
+	// Gated on the DB (not billingSvc): redemption only needs the promo tables,
+	// not Stripe.
+	if ans.db != nil {
+		promoPerMin := cfg.PromoRateLimitPerMin
+		if promoPerMin <= 0 {
+			promoPerMin = 5 // safe default if unset (e.g. zero-value ServerConfig in tests)
+		}
+		redeemLimiter := webmiddleware.PerUserRateLimit(rate.Limit(promoPerMin/60.0), 5)
+		apiRouter.Handle("/credits/redeem",
+			jobIdempotency(redeemLimiter(http.HandlerFunc(hg.Billing.RedeemPromoCode))),
+		).Methods(http.MethodPost)
+	}
+
 	apiRouter.HandleFunc("/jobs/{id}", hg.API.GetJob).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/jobs/{id}", hg.API.DeleteJob).Methods(http.MethodDelete)
 	apiRouter.HandleFunc("/jobs/{id}/cancel", hg.API.CancelJob).Methods(http.MethodPost)
@@ -387,6 +411,12 @@ func New(cfg ServerConfig) (*Server, error) {
 	adminRouter.HandleFunc("/jobs", hg.Admin.GetJobs).Methods(http.MethodGet)
 	adminRouter.HandleFunc("/jobs/{id}/cancel", hg.Admin.CancelJob).Methods(http.MethodPost)
 
+	// Promo-code administration. Inherits RequireRole(admin) from adminRouter;
+	// each handler also re-checks the admin session as defense-in-depth.
+	adminRouter.HandleFunc("/promo-codes", hg.Admin.CreatePromoCode).Methods(http.MethodPost)
+	adminRouter.HandleFunc("/promo-codes", hg.Admin.ListPromoCodes).Methods(http.MethodGet)
+	adminRouter.HandleFunc("/promo-codes/{id}", hg.Admin.UpdatePromoCode).Methods(http.MethodPatch)
+
 	// Webhook endpoints are public provider callbacks, not customer API routes.
 	// Keep them out of the /api/v1 customer namespace and give them a dedicated
 	// middleware chain rather than inheriting generic public API rate limits.
@@ -411,7 +441,7 @@ func New(cfg ServerConfig) (*Server, error) {
 	// H4: accepts a slice so the previous secret stays valid during rotation.
 	switch {
 	case len(cfg.ClerkWebhookSigningSecrets) > 0 && provisioningSvc != nil:
-		clerkHandler, err := webhandlers.NewClerkWebhookHandler(cfg.PgDB, cfg.ClerkWebhookSigningSecrets, provisioningSvc, ans.logger)
+		clerkHandler, err := webhandlers.NewClerkWebhookHandler(cfg.PgDB, cfg.ClerkWebhookSigningSecrets, provisioningSvc, deps.PromoSvc, ans.logger)
 		if err != nil {
 			return nil, fmt.Errorf("clerk webhook handler init: %w", err)
 		}

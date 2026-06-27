@@ -193,6 +193,7 @@ func buildServerConfig(cfg *runner.Config, db *sql.DB, svc *web.Service, appCfg 
 		GoogleConfig:               appCfg.Google,
 		EncryptionKey:              appCfg.EncryptionKey,
 		AllowedOrigins:             appCfg.AllowedOrigins,
+		PromoRateLimitPerMin:       appCfg.PromoRateLimitPerMin,
 	}
 
 	slog.Info("auth_enabled", slog.String("provider", "clerk"))
