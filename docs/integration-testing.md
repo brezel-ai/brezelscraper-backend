@@ -33,9 +33,9 @@ The integration suite **fails** if any of the following happens:
 - Job is `completed` but:
   - Results API has `total_count == 0`
   - Results contain no record with non-empty `title` and `link`
-  - When images/reviews are requested: Results API has no record with non-empty `images` / `user_reviews_extended`
+  - When images/reviews are requested: Results API has no record with non-empty `images` / `user_reviews`
   - CSV download is empty, malformed, missing required columns, or has **0 data rows**
-  - When images/reviews are requested: CSV has no row with non-empty `images` / `user_reviews_extended`
+  - When images/reviews are requested: CSV has no row with non-empty `images` / `user_reviews`
   - CSV data row count does **not** match Results API `total_count`
 
 CSV validation requires these columns to exist:
@@ -44,7 +44,7 @@ CSV validation requires these columns to exist:
 - `title`
 - `link`
 - `images`
-- `user_reviews_extended`
+- `user_reviews`
 
 ## Test Matrix (Current Scenarios)
 

@@ -391,22 +391,16 @@ When you use the fast mode ensure that you have provided:
 - Additional information about the business.
 
 #### 31. `user_reviews`
-- Collection of customer reviews, including text, rating, and timestamp.
+- Collection of customer reviews fetched from the paginated review endpoints,
+  including text, rating, and timestamp (up to around 300 per place).
 
 #### 32. `emails`
 - Email addresses associated with the business, if available.
-
-#### 33. `user_reviews_extended`
-- Collection of customer reviews, including text, rating, and timestamp. This includes all the
-  reviews that can be extracted (up to around 300)
 
 **Note**: email is empty by default (see Usage)
 
 **Note**: Input id is an ID that you can define per query. By default it's a UUID
 In order to define it you can have an input file like:
-
-**Note**: user_reviews_extended is empty by default. You need to start the program with the
-`-extra-reviews` command line flag to enabled this (see Usage)
 
 ```
 Matsuhisa Athens #!#MyIDentifier

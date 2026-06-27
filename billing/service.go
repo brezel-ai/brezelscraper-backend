@@ -1022,11 +1022,6 @@ const billableItemsQuery = `
 				WHEN user_reviews IS NOT NULL AND jsonb_typeof(user_reviews) = 'array'
 				THEN jsonb_array_length(user_reviews)
 				ELSE 0
-			END +
-			CASE
-				WHEN user_reviews_extended IS NOT NULL AND jsonb_typeof(user_reviews_extended) = 'array'
-				THEN jsonb_array_length(user_reviews_extended)
-				ELSE 0
 			END
 		), 0) AS total_reviews,
 		COALESCE(SUM(

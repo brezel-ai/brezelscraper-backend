@@ -112,7 +112,6 @@ func (r *fallbackResultWriter) insertSingleEntry(ctx context.Context, entry *gma
 	completeAddressJSON := mustMarshalJSON(entry.CompleteAddress)
 	aboutJSON := mustMarshalJSON(entry.About)
 	userReviewsJSON := mustMarshalJSON(entry.UserReviews)
-	userReviewsExtendedJSON := mustMarshalJSON(entry.UserReviewsExtended)
 
 	// Convert slices to strings
 	categoriesStr := strings.Join(entry.Categories, ", ")
@@ -124,51 +123,50 @@ func (r *fallbackResultWriter) insertSingleEntry(ctx context.Context, entry *gma
 		reviews_per_rating, latitude, longitude, status_info, description,
 		reviews_link, thumbnail, timezone, price_range, data_id, images,
 		reservations, order_online, menu, owner, complete_address, about,
-		user_reviews, user_reviews_extended, emails, created_at
+		user_reviews, emails, created_at
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
 		$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-		$31, $32, $33, $34, $35, $36, $37
+		$31, $32, $33, $34, $35, $36
 	) ON CONFLICT (cid, job_id) DO NOTHING`
 
 	_, err := r.db.ExecContext(dbCtx, query,
-		r.userID,                // $1 user_id
-		r.jobID,                 // $2 job_id
-		entry.ID,                // $3 input_id
-		entry.Link,              // $4 link
-		entry.Cid,               // $5 cid
-		entry.Title,             // $6 title
-		categoriesStr,           // $7 categories
-		entry.Category,          // $8 category
-		entry.Address,           // $9 address
-		openHoursJSON,           // $10 openhours
-		popularTimesJSON,        // $11 popular_times
-		entry.WebSite,           // $12 website
-		entry.Phone,             // $13 phone
-		entry.PlusCode,          // $14 pluscode
-		entry.ReviewCount,       // $15 review_count
-		entry.ReviewRating,      // $16 rating
-		reviewsPerRatingJSON,    // $17 reviews_per_rating
-		entry.Latitude,          // $18 latitude
-		entry.Longtitude,        // $19 longitude
-		entry.Status,            // $20 status_info
-		entry.Description,       // $21 description
-		entry.ReviewsLink,       // $22 reviews_link
-		entry.Thumbnail,         // $23 thumbnail
-		entry.Timezone,          // $24 timezone
-		entry.PriceRange,        // $25 price_range
-		entry.DataID,            // $26 data_id
-		imagesJSON,              // $27 images
-		reservationsJSON,        // $28 reservations
-		orderOnlineJSON,         // $29 order_online
-		menuJSON,                // $30 menu
-		ownerJSON,               // $31 owner
-		completeAddressJSON,     // $32 complete_address
-		aboutJSON,               // $33 about
-		userReviewsJSON,         // $34 user_reviews
-		userReviewsExtendedJSON, // $35 user_reviews_extended
-		emailsStr,               // $36 emails
-		time.Now(),              // $37 created_at
+		r.userID,             // $1 user_id
+		r.jobID,              // $2 job_id
+		entry.ID,             // $3 input_id
+		entry.Link,           // $4 link
+		entry.Cid,            // $5 cid
+		entry.Title,          // $6 title
+		categoriesStr,        // $7 categories
+		entry.Category,       // $8 category
+		entry.Address,        // $9 address
+		openHoursJSON,        // $10 openhours
+		popularTimesJSON,     // $11 popular_times
+		entry.WebSite,        // $12 website
+		entry.Phone,          // $13 phone
+		entry.PlusCode,       // $14 pluscode
+		entry.ReviewCount,    // $15 review_count
+		entry.ReviewRating,   // $16 rating
+		reviewsPerRatingJSON, // $17 reviews_per_rating
+		entry.Latitude,       // $18 latitude
+		entry.Longtitude,     // $19 longitude
+		entry.Status,         // $20 status_info
+		entry.Description,    // $21 description
+		entry.ReviewsLink,    // $22 reviews_link
+		entry.Thumbnail,      // $23 thumbnail
+		entry.Timezone,       // $24 timezone
+		entry.PriceRange,     // $25 price_range
+		entry.DataID,         // $26 data_id
+		imagesJSON,           // $27 images
+		reservationsJSON,     // $28 reservations
+		orderOnlineJSON,      // $29 order_online
+		menuJSON,             // $30 menu
+		ownerJSON,            // $31 owner
+		completeAddressJSON,  // $32 complete_address
+		aboutJSON,            // $33 about
+		userReviewsJSON,      // $34 user_reviews
+		emailsStr,            // $35 emails
+		time.Now(),           // $36 created_at
 	)
 
 	return err
