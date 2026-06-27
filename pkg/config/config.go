@@ -61,6 +61,10 @@ type Config struct {
 	// ── Webhook event cleanup ────────────────────────────────────────
 	WebhookEventRetentionDays int `env:"WEBHOOK_EVENT_RETENTION_DAYS" envDefault:"90"`
 
+	// ── Promo codes ──────────────────────────────────────────────────
+	// Redeem rate limit (requests/min per user) for POST /credits/redeem.
+	PromoRateLimitPerMin float64 `env:"PROMO_RATE_LIMIT_PER_MIN" envDefault:"5"`
+
 	// ── AWS / S3 ────────────────────────────────────────────────────
 	AWS          AWSConfig `envPrefix:"AWS_"`
 	S3BucketName string    `env:"S3_BUCKET_NAME"`

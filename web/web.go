@@ -9,9 +9,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -35,17 +32,6 @@ import (
 
 //go:embed static
 var static embed.FS
-
-// promoRateLimitPerMin reads the redeem rate limit (requests/min) once at
-// startup. Env PROMO_RATE_LIMIT_PER_MIN overrides; default 5.
-func promoRateLimitPerMin() float64 {
-	if v := strings.TrimSpace(os.Getenv("PROMO_RATE_LIMIT_PER_MIN")); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
-			return f
-		}
-	}
-	return 5
-}
 
 type Server struct {
 	tmpl           map[string]*template.Template
@@ -107,6 +93,9 @@ type ServerConfig struct {
 	// AllowedOrigins is read once from pkg/config at startup. Eliminates
 	// the direct os.Getenv("ALLOWED_ORIGINS") call inside web.New.
 	AllowedOrigins []string
+	// PromoRateLimitPerMin is read once from pkg/config at startup. Eliminates
+	// the direct os.Getenv("PROMO_RATE_LIMIT_PER_MIN") call inside web.New.
+	PromoRateLimitPerMin float64
 	// InternalHandlers is an extension point for the internal listener.
 	// Callers populate this with diagnostic endpoints they want exposed on
 	// 9090 (alongside /health and /metrics). The webrunner registers
@@ -350,7 +339,11 @@ func New(cfg ServerConfig) (*Server, error) {
 	// Gated on the DB (not billingSvc): redemption only needs the promo tables,
 	// not Stripe.
 	if ans.db != nil {
-		redeemLimiter := webmiddleware.PerUserRateLimit(rate.Limit(promoRateLimitPerMin()/60.0), 5)
+		promoPerMin := cfg.PromoRateLimitPerMin
+		if promoPerMin <= 0 {
+			promoPerMin = 5 // safe default if unset (e.g. zero-value ServerConfig in tests)
+		}
+		redeemLimiter := webmiddleware.PerUserRateLimit(rate.Limit(promoPerMin/60.0), 5)
 		apiRouter.Handle("/credits/redeem",
 			jobIdempotency(redeemLimiter(http.HandlerFunc(hg.Billing.RedeemPromoCode))),
 		).Methods(http.MethodPost)
