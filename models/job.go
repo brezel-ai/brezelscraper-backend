@@ -69,7 +69,13 @@ type JobData struct {
 	// headless-browser reasoning.
 	MaxTime  DurationSec `json:"max_time"`
 	FastMode bool        `json:"fast_mode"`
-	Proxies  []string    `json:"proxies" validate:"omitempty,max=100,dive,max=2048"`
+	// WebsiteFilter pre-filters scraped businesses by web presence at scrape
+	// time (the new-job wizard's "Website" choice). "" / "all" = no filter;
+	// "no_website" keeps businesses without a real owned site; "has_website"
+	// keeps only those with one. Applied in gmaps before results are written,
+	// so it reduces what is stored and billed (see filters_applied billing).
+	WebsiteFilter string   `json:"website_filter" validate:"omitempty,oneof=all no_website has_website"`
+	Proxies       []string `json:"proxies" validate:"omitempty,max=100,dive,max=2048"`
 }
 
 // Job represents a scraping job
