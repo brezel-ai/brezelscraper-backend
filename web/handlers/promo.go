@@ -104,6 +104,14 @@ func (h *AdminHandlers) CreatePromoCode(w http.ResponseWriter, r *http.Request) 
 		internalError(w, h.Deps.Logger, err, "Failed to create promo code", slog.String("admin_id", adminID))
 		return
 	}
+	// Admin actions are logged at Warn level (not Info) so they stand out in
+	// log aggregation dashboards and can be filtered for audit review.
+	if h.Deps.Logger != nil {
+		h.Deps.Logger.Warn("admin_promo_code_created",
+			slog.String("admin_id", adminID),
+			slog.String("code", code.Code),
+			slog.Float64("amount", code.Amount))
+	}
 	renderJSON(w, http.StatusCreated, code)
 }
 
@@ -130,7 +138,8 @@ type setPromoStatusRequest struct {
 
 // UpdatePromoCode handles PATCH /api/v1/admin/promo-codes/{id} (enable/disable).
 func (h *AdminHandlers) UpdatePromoCode(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireAdminSession(w, r); !ok {
+	adminID, ok := requireAdminSession(w, r)
+	if !ok {
 		return
 	}
 	if h.Deps.PromoSvc == nil {
@@ -155,5 +164,15 @@ func (h *AdminHandlers) UpdatePromoCode(w http.ResponseWriter, r *http.Request) 
 		internalError(w, h.Deps.Logger, err, "Failed to update promo code")
 		return
 	}
-	renderJSON(w, http.StatusNoContent, nil)
+	if h.Deps.Logger != nil {
+		h.Deps.Logger.Warn("admin_promo_code_status_changed",
+			slog.String("admin_id", adminID),
+			slog.String("promo_code_id", id),
+			slog.String("status", req.Status))
+	}
+	// Bare 204 (not renderJSON): a 204 forbids a response body, so encoding
+	// JSON into it returns ErrBodyNotAllowed and renderJSON would log a
+	// spurious ERROR on every successful disable. WriteHeader is the correct
+	// no-body success signal and matches the other 204 endpoints.
+	w.WriteHeader(http.StatusNoContent)
 }

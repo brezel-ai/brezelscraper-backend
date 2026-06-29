@@ -360,6 +360,7 @@ func New(cfg ServerConfig) (*Server, error) {
 	apiRouter.HandleFunc("/jobs/estimates", hg.API.EstimateJobCost).Methods(http.MethodPost)
 	apiRouter.HandleFunc("/results", hg.API.GetUserResults).Methods(http.MethodGet)
 	apiRouter.HandleFunc("/dashboard", hg.API.GetDashboard).Methods(http.MethodGet)
+	apiRouter.HandleFunc("/me", hg.API.GetMe).Methods(http.MethodGet)
 
 	// API key management endpoints
 	if cfg.APIKeyRepo != nil {
