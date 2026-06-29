@@ -570,7 +570,7 @@ func (h *APIHandlers) GetJobResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tiers, err := webpresence.ParseTiers(r.URL.Query().Get("web_presence"))
+	tiers, err := webpresence.ParseQueryFilter(r.URL.Query().Get("web_presence"))
 	if err != nil {
 		renderJSON(w, http.StatusBadRequest, models.APIError{Code: http.StatusBadRequest, Message: err.Error()})
 		return
