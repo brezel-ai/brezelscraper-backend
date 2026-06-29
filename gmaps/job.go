@@ -40,6 +40,14 @@ type GmapJob struct {
 	// fix; see PlaceJob.applyPerPlaceImageCap for the contract).
 	ImagesPerPlace int
 
+	// WebsiteFilter pre-filters scraped places by web presence at scrape time
+	// (Apify-style). "" / "all" keep everything; "no_website" keeps only
+	// businesses without a real owned site; "has_website" keeps only those
+	// with one. Forwarded to every PlaceJob this GmapJob spawns, which drops
+	// non-matching places before they are written or billed. See
+	// pkg/webpresence.Keep and PlaceJob.Process.
+	WebsiteFilter string
+
 	// UserID is the Clerk user identifier. Propagated to every PlaceJob
 	// spawned from this seed so gmaps log lines carry user context even
 	// though scrapemate replaces the ctx-bound logger per job. Empty in
@@ -148,6 +156,15 @@ func WithImagesPerPlace(n int) GmapJobOptions {
 	}
 }
 
+// WithWebsiteFilter sets the scrape-time web-presence pre-filter on the
+// GmapJob; the same value is forwarded to every PlaceJob spawned from this
+// seed. "" / "all" disable the filter. See PlaceJob.Process for the drop.
+func WithWebsiteFilter(filter string) GmapJobOptions {
+	return func(j *GmapJob) {
+		j.WebsiteFilter = filter
+	}
+}
+
 // WithUserContext propagates the user-facing job identifiers to the GmapJob
 // so they can be forwarded to every PlaceJob it spawns. This is required
 // because scrapemate replaces the ctx-bound logger per job (see
@@ -251,6 +268,9 @@ func (j *GmapJob) Process(ctx context.Context, resp *scrapemate.Response) (any, 
 		if j.ImagesPerPlace > 0 {
 			jopts = append(jopts, WithPlaceJobImagesPerPlace(j.ImagesPerPlace))
 		}
+		if j.WebsiteFilter != "" {
+			jopts = append(jopts, WithPlaceJobWebsiteFilter(j.WebsiteFilter))
+		}
 		if j.UserID != "" || j.UserJobID != "" {
 			jopts = append(jopts, WithPlaceJobUserContext(j.UserID, j.UserJobID))
 		}
@@ -300,6 +320,9 @@ func (j *GmapJob) Process(ctx context.Context, resp *scrapemate.Response) (any, 
 				}
 				if j.ImagesPerPlace > 0 {
 					jopts = append(jopts, WithPlaceJobImagesPerPlace(j.ImagesPerPlace))
+				}
+				if j.WebsiteFilter != "" {
+					jopts = append(jopts, WithPlaceJobWebsiteFilter(j.WebsiteFilter))
 				}
 				if j.UserID != "" || j.UserJobID != "" {
 					jopts = append(jopts, WithPlaceJobUserContext(j.UserID, j.UserJobID))

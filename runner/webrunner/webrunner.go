@@ -1098,6 +1098,7 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		IncludeEmails:  job.Data.IncludeEmails,
 		Images:         job.Data.MaxImages > 0,
 		ImagesPerPlace: job.Data.MaxImages,
+		WebsiteFilter:  job.Data.WebsiteFilter,
 		Debug:          w.cfg.Debug,
 		ReviewsMax:     job.Data.MaxReviews,
 		GeoCoordinates: coords,

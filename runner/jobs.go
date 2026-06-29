@@ -13,6 +13,7 @@ import (
 	"github.com/gosom/google-maps-scraper/deduper"
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/gmaps"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	"github.com/gosom/scrapemate"
 )
 
@@ -35,6 +36,12 @@ type SeedJobConfig struct {
 	// gmaps.PlaceJob.applyPerPlaceImageCap for the contract (May 2026,
 	// Cafe Schöneberg fix).
 	ImagesPerPlace int
+	// WebsiteFilter is the scrape-time web-presence pre-filter (Apify-style).
+	// "" / "all" keep everything; "no_website" keeps only businesses without a
+	// real owned site; "has_website" keeps only those with one. Forwarded into
+	// the gmaps layer (GmapJob/PlaceJob in normal mode, SearchJob in fast
+	// mode), which drops non-matching places before they are written/billed.
+	WebsiteFilter  string
 	Debug          bool
 	ReviewsMax     int
 	GeoCoordinates string
@@ -146,6 +153,12 @@ func CreateSeedJobs(cfg SeedJobConfig) (jobs []scrapemate.IJob, err error) {
 				opts = append(opts, gmaps.WithImagesPerPlace(cfg.ImagesPerPlace))
 			}
 
+			// Scrape-time web-presence pre-filter: dropped places are never
+			// written or billed. See gmaps.PlaceJob.Process.
+			if webpresence.FilterApplied(cfg.WebsiteFilter) {
+				opts = append(opts, gmaps.WithWebsiteFilter(cfg.WebsiteFilter))
+			}
+
 			// Propagate user context so gmaps log lines carry user_id and the
 			// user-facing job_id even though scrapemate replaces the ctx logger.
 			if cfg.UserID != "" || cfg.UserJobID != "" {
@@ -181,6 +194,12 @@ func CreateSeedJobs(cfg SeedJobConfig) (jobs []scrapemate.IJob, err error) {
 
 			if cfg.UserID != "" || cfg.UserJobID != "" {
 				opts = append(opts, gmaps.WithSearchJobUserContext(cfg.UserID, cfg.UserJobID))
+			}
+
+			// Scrape-time web-presence pre-filter (fast mode): dropped entries
+			// are never emitted/written/billed. See gmaps.SearchJob.Process.
+			if webpresence.FilterApplied(cfg.WebsiteFilter) {
+				opts = append(opts, gmaps.WithSearchJobWebsiteFilter(cfg.WebsiteFilter))
 			}
 
 			job = gmaps.NewSearchJob(&jparams, opts...)
