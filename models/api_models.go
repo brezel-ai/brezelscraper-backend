@@ -96,6 +96,7 @@ type EnhancedResult struct {
 	OpenHours        map[string][]string      `json:"open_hours,omitempty"`
 	PopularTimes     map[string]map[int]int   `json:"popular_times,omitempty"`
 	Website          string                   `json:"website"`
+	WebPresence      string                   `json:"web_presence"`
 	Phone            string                   `json:"phone"`
 	PlusCode         string                   `json:"plus_code"`
 	ReviewCount      int                      `json:"review_count"`
@@ -124,11 +125,12 @@ type EnhancedResult struct {
 
 // a paginated response for job results
 type PaginatedResultsResponse struct {
-	Results []EnhancedResult `json:"results"`
-	Total   int              `json:"total"`
-	Page    int              `json:"page"`
-	Limit   int              `json:"limit"`
-	HasMore bool             `json:"has_more"`
+	Results           []EnhancedResult `json:"results"`
+	Total             int              `json:"total"`
+	Page              int              `json:"page"`
+	Limit             int              `json:"limit"`
+	HasMore           bool             `json:"has_more"`
+	WebPresenceCounts map[string]int   `json:"web_presence_counts,omitempty"`
 }
 
 // CreditTransaction represents a single credit transaction for billing history.

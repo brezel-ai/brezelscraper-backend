@@ -9,6 +9,8 @@ import (
 	"strconv"
 
 	"github.com/gosom/google-maps-scraper/models"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
+	"github.com/lib/pq"
 )
 
 type ResultsService struct {
@@ -158,26 +160,54 @@ func (s *ResultsService) GetUserResults(ctx context.Context, userID string, limi
 	return results, nil
 }
 
-// GetEnhancedJobResultsPaginated returns the enhanced (full-fat) result
-// rows for a job, scoped to the requesting user. Both the COUNT and the
-// SELECT carry `user_id = $2` so the query layer cannot leak rows from
-// other tenants even if a future handler forgets the App.Get ownership
-// pre-check, and so result rows that drift out of sync with their job's
-// owner (data integrity bug) are also masked. The handler still does an
-// App.Get up-front so it can check the StatusFailed billing gate — that
-// pre-check is not redundant, it provides distinct behavior.
-func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, jobID, userID string, limit, offset int) ([]models.EnhancedResult, int, error) {
+// GetEnhancedJobResultsPaginated returns one page of a job's enhanced result
+// rows, scoped to the requesting user and optionally filtered by web-presence
+// tier. It scans (id, website) for the whole job, then classifies, counts,
+// filters and paginates in Go (a job is capped at max_results, so the scan
+// stays small), then fetches full-fat data for only the page's IDs. Both the
+// scan and the fetch carry `user_id = $2` for tenant isolation. The returned
+// counts are the UNFILTERED per-tier breakdown for the whole job (used for the
+// "X of Y" UI summary).
+func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, jobID, userID string, tiers []string, limit, offset int) ([]models.EnhancedResult, int, map[string]int, error) {
 	if s.db == nil {
-		return nil, 0, fmt.Errorf("database not available")
-	}
-	const countQ = `SELECT COUNT(1) FROM results WHERE job_id = $1 AND user_id = $2`
-	var total int
-	if err := s.db.QueryRowContext(ctx, countQ, jobID, userID).Scan(&total); err != nil {
-		s.log.Error("enhanced_results_count_failed", slog.String("job_id", jobID), slog.String("user_id", userID), slog.Any("error", err))
-		return nil, 0, fmt.Errorf("failed to count results: %w", err)
+		return nil, 0, nil, fmt.Errorf("database not available")
 	}
 
-	const q = `SELECT 
+	// 1. Cheap scan of (id, website) for the whole job, in display order.
+	//    A job is capped at max_results (<=500), so this stays small.
+	const scanQ = `SELECT id, COALESCE(website, '')
+        FROM results
+        WHERE job_id = $1 AND user_id = $2
+        ORDER BY created_at DESC`
+	scanRows, err := s.db.QueryContext(ctx, scanQ, jobID, userID)
+	if err != nil {
+		s.log.Error("enhanced_results_scan_failed", slog.String("job_id", jobID), slog.String("user_id", userID), slog.Any("error", err))
+		return nil, 0, nil, fmt.Errorf("failed to scan results: %w", err)
+	}
+	var rows []webpresence.Row
+	for scanRows.Next() {
+		var r webpresence.Row
+		if err := scanRows.Scan(&r.ID, &r.Website); err != nil {
+			scanRows.Close()
+			return nil, 0, nil, fmt.Errorf("failed to scan result id/website: %w", err)
+		}
+		rows = append(rows, r)
+	}
+	if err := scanRows.Err(); err != nil {
+		scanRows.Close()
+		return nil, 0, nil, fmt.Errorf("row iteration error: %w", err)
+	}
+	scanRows.Close()
+
+	// 2. Classify + count + filter + slice the page, all in Go.
+	page := webpresence.Paginate(rows, tiers, limit, offset)
+	if len(page.PageIDs) == 0 {
+		return []models.EnhancedResult{}, page.Total, page.Counts, nil
+	}
+
+	// 3. Fetch full-fat rows for just this page's IDs. user_id keeps tenant
+	//    isolation even though IDs already came from a user-scoped scan.
+	const q = `SELECT
             id,
             COALESCE(user_id, '') as user_id,
             job_id::text as job_id,
@@ -216,23 +246,21 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
             COALESCE(emails, '') as emails,
             COALESCE(created_at, NOW()) as created_at
         FROM results
-        WHERE job_id = $1 AND user_id = $2
-        ORDER BY created_at DESC
-        LIMIT $3 OFFSET $4`
+        WHERE id = ANY($1) AND user_id = $2`
 
-	rows, err := s.db.QueryContext(ctx, q, jobID, userID, limit, offset)
+	dataRows, err := s.db.QueryContext(ctx, q, pq.Array(page.PageIDs), userID)
 	if err != nil {
-		s.log.Error("enhanced_results_query_failed", slog.String("job_id", jobID), slog.String("user_id", userID), slog.Int("limit", limit), slog.Int("offset", offset), slog.Any("error", err))
-		return nil, 0, fmt.Errorf("failed to query enhanced results: %w", err)
+		s.log.Error("enhanced_results_query_failed", slog.String("job_id", jobID), slog.String("user_id", userID), slog.Any("error", err))
+		return nil, 0, nil, fmt.Errorf("failed to query enhanced results: %w", err)
 	}
-	defer rows.Close()
+	defer dataRows.Close()
 
-	var results []models.EnhancedResult
-	for rows.Next() {
+	byID := make(map[int]models.EnhancedResult, len(page.PageIDs))
+	for dataRows.Next() {
 		var r models.EnhancedResult
 		var openHours, popularTimes, reviewsPerRating, menu, owner, completeAddress NullableJSON
 		var images, reservations, orderOnline, about, userReviews NullableJSON
-		if err := rows.Scan(
+		if err := dataRows.Scan(
 			&r.ID, &r.UserID, &r.JobID, &r.InputID, &r.Link, &r.Cid, &r.Title,
 			&r.Categories, &r.Category, &r.Address,
 			&openHours, &popularTimes,
@@ -245,7 +273,7 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
 			&about, &userReviews,
 			&r.Emails, &r.CreatedAt,
 		); err != nil {
-			return nil, 0, fmt.Errorf("failed to scan enhanced result: %w", err)
+			return nil, 0, nil, fmt.Errorf("failed to scan enhanced result: %w", err)
 		}
 
 		if openHours.Valid && openHours.Data != nil {
@@ -373,12 +401,23 @@ func (s *ResultsService) GetEnhancedJobResultsPaginated(ctx context.Context, job
 			}
 		}
 
-		results = append(results, r)
+		r.WebPresence = string(webpresence.Classify(r.Website))
+		byID[r.ID] = r
+	}
+	if err := dataRows.Err(); err != nil {
+		return nil, 0, nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("row iteration error: %w", err)
+	// Reassemble in page order (ANY() does not guarantee order).
+	results := make([]models.EnhancedResult, 0, len(page.PageIDs))
+	for _, id := range page.PageIDs {
+		if r, ok := byID[id]; ok {
+			results = append(results, r)
+		}
 	}
-	s.log.Debug("enhanced_results_retrieved", slog.String("job_id", jobID), slog.Int("count", len(results)), slog.Int("total", total), slog.Int("limit", limit), slog.Int("offset", offset))
-	return results, total, nil
+
+	s.log.Debug("enhanced_results_retrieved",
+		slog.String("job_id", jobID), slog.Int("count", len(results)),
+		slog.Int("total", page.Total), slog.Int("limit", limit), slog.Int("offset", offset))
+	return results, page.Total, page.Counts, nil
 }
