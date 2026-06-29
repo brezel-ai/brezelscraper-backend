@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gosom/google-maps-scraper/models"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	webutils "github.com/gosom/google-maps-scraper/web/utils"
 	"github.com/shopspring/decimal"
 )
@@ -33,6 +34,10 @@ const (
 	defaultPriceContactDetails = 0.002
 	defaultPriceReview         = 0.0005
 	defaultPriceImage          = 0.0005
+	// defaultPriceFiltersApplied is the Apify-style per-matching-place fee for
+	// an active scrape-time filter (the website filter). Charged once per
+	// matching written place per active filter.
+	defaultPriceFiltersApplied = 0.001
 
 	priceCacheTTL = 60 * time.Second
 
@@ -54,6 +59,7 @@ var defaultPricesMicro = map[string]int64{
 	"contact_details": creditsToMicro(defaultPriceContactDetails),
 	"review":          creditsToMicro(defaultPriceReview),
 	"image":           creditsToMicro(defaultPriceImage),
+	"filters_applied": creditsToMicro(defaultPriceFiltersApplied),
 }
 
 // creditsToMicro converts a float64 credit value to integer micro-credits.
@@ -76,6 +82,9 @@ type CostBreakdown struct {
 	ContactDetailsCost float64 `json:"contact_details_cost"`
 	ReviewsCost        float64 `json:"reviews_cost"`
 	ImagesCost         float64 `json:"images_cost"`
+	// FilterCost is the Apify-style scrape-time website-filter fee
+	// (per matching place). Zero when no website filter is active.
+	FilterCost float64 `json:"filter_cost"`
 }
 
 // CostEstimate is the top-level estimate object returned by EstimateJobCost.
@@ -248,10 +257,15 @@ func (s *EstimationService) EstimateJobCost(
 	email bool,
 	maxReviews *int,
 	maxImages *int,
+	websiteFilter string,
 ) (*CostEstimate, error) {
 	if depth < 1 {
 		depth = 1
 	}
+
+	// A scrape-time website filter (no_website / has_website) adds an
+	// Apify-style per-matching-place fee. "" / "all" add nothing.
+	filterApplied := webpresence.FilterApplied(websiteFilter)
 
 	// Resolve effective reviews-per-place for estimation.
 	// nil means "no limit" — estimate at the realistic average.
@@ -297,6 +311,7 @@ func (s *EstimationService) EstimateJobCost(
 	priceContactDetails := priceLookup("contact_details")
 	priceReview := priceLookup("review")
 	priceImage := priceLookup("image")
+	priceFiltersApplied := priceLookup("filters_applied")
 
 	// ── Place estimation ───────────────────────────────────────────────
 	placesPerKeyword := estimatePlacesFromDepth(depth)
@@ -321,10 +336,10 @@ func (s *EstimationService) EstimateJobCost(
 	}
 
 	// ── Cost calculation for all three estimates ───────────────────────
-	calcCost := func(places int) (total int64, breakdown [5]int64) {
+	calcCost := func(places int) (total int64, breakdown [6]int64) {
 		jobStart := priceJobStart
 		placesMicro := int64(places) * pricePlaceScraped
-		var contactMicro, reviewsMicro, imagesMicro int64
+		var contactMicro, reviewsMicro, imagesMicro, filtersMicro int64
 		if email {
 			contactMicro = int64(places) * priceContactDetails
 		}
@@ -348,8 +363,14 @@ func (s *EstimationService) EstimateJobCost(
 			// "No limit" — estimate at realistic per-place average.
 			imagesMicro = int64(places) * int64(AvgImagesPerPlace) * priceImage
 		}
-		total = jobStart + placesMicro + contactMicro + reviewsMicro + imagesMicro
-		breakdown = [5]int64{jobStart, placesMicro, contactMicro, reviewsMicro, imagesMicro}
+		if filterApplied {
+			// Apify-style: one filter fee per matching written place. The
+			// estimate's place count already represents matching places, since
+			// max_results counts only rows that survive the scrape-time drop.
+			filtersMicro = int64(places) * priceFiltersApplied
+		}
+		total = jobStart + placesMicro + contactMicro + reviewsMicro + imagesMicro + filtersMicro
+		breakdown = [6]int64{jobStart, placesMicro, contactMicro, reviewsMicro, imagesMicro, filtersMicro}
 		return
 	}
 
@@ -378,6 +399,7 @@ func (s *EstimationService) EstimateJobCost(
 		"contact_details": microToCredits(priceContactDetails),
 		"review":          microToCredits(priceReview),
 		"image":           microToCredits(priceImage),
+		"filters_applied": microToCredits(priceFiltersApplied),
 	}
 
 	estimate := &CostEstimate{
@@ -401,6 +423,7 @@ func (s *EstimationService) EstimateJobCost(
 			ContactDetailsCost: microToCredits(primaryBreakdown[2]),
 			ReviewsCost:        microToCredits(primaryBreakdown[3]),
 			ImagesCost:         microToCredits(primaryBreakdown[4]),
+			FilterCost:         microToCredits(primaryBreakdown[5]),
 		},
 
 		Reviews:        estimatedReviews,

@@ -1063,7 +1063,13 @@ func (s *Service) CountBillableItems(ctx context.Context, jobID string) (*Billin
 // ChargeAllJobEvents charges all billing events for a completed job in a single transaction.
 // This ensures atomicity - either all charges succeed or all are rolled back.
 // If any charge fails due to insufficient balance, the entire transaction is rolled back.
-func (s *Service) ChargeAllJobEvents(ctx context.Context, userID, jobID string, placesCount int) error {
+//
+// filtersApplied is the quantity for the Apify-style "filters_applied" event:
+// the number of matching written places times the number of active scrape-time
+// filters (currently 0 or 1 — the website filter). Pass 0 when no scrape-time
+// filter was applied. Because billing runs on the rows that actually survived
+// the scrape-time drop, this charge naturally scales with the matched results.
+func (s *Service) ChargeAllJobEvents(ctx context.Context, userID, jobID string, placesCount, filtersApplied int) error {
 	if s.db == nil {
 		return fmt.Errorf("db not configured")
 	}
@@ -1151,6 +1157,13 @@ func (s *Service) ChargeAllJobEvents(ctx context.Context, userID, jobID string, 
 
 		// 5. Charge for contact details
 		if err := chargeEventInTx("contact_details", counts.PlacesWithContacts, "job:"+jobID+":contact_details"); err != nil {
+			return err // Transaction will be rolled back
+		}
+
+		// 6. Charge for the scrape-time website filter (Apify-style: $0.001 per
+		//    matching written place per filter). filtersApplied is 0 when no
+		//    scrape-time filter was applied, so chargeEventInTx skips it.
+		if err := chargeEventInTx("filters_applied", filtersApplied, "job:"+jobID+":filters_applied"); err != nil {
 			return err // Transaction will be rolled back
 		}
 

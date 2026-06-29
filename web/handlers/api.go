@@ -71,6 +71,7 @@ type estimateRequest struct {
 	MaxImages     *int     `json:"max_images,omitempty" validate:"omitempty,min=0,max=500"`
 	MaxReviews    *int     `json:"max_reviews,omitempty" validate:"omitempty,min=0,max=500"`
 	MaxResults    *int     `json:"max_results,omitempty" validate:"omitempty,min=1,max=500"`
+	WebsiteFilter string   `json:"website_filter,omitempty" validate:"omitempty,oneof=all no_website has_website"`
 }
 
 // estimateBalance is the nested balance sub-object in the estimate response.
@@ -205,6 +206,7 @@ func (h *APIHandlers) Scrape(w http.ResponseWriter, r *http.Request) {
 			newJob.Data.IncludeEmails,
 			rvPtr,
 			imPtr,
+			newJob.Data.WebsiteFilter,
 		)
 		if err != nil {
 			// Pricing-layer outage (DB unreachable, pricing_rules empty)
@@ -803,6 +805,7 @@ func (h *APIHandlers) EstimateJobCost(w http.ResponseWriter, r *http.Request) {
 		req.IncludeEmails,
 		req.MaxReviews,
 		req.MaxImages,
+		req.WebsiteFilter,
 	)
 	if err != nil {
 		if errors.Is(err, webservices.ErrPricingUnavailable) {

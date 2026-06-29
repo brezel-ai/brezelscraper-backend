@@ -88,6 +88,7 @@ func TestEstimationService_LoggerDI(t *testing.T) {
 		false,
 		nil,
 		nil,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
