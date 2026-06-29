@@ -204,3 +204,12 @@ type DashboardResponse struct {
 	KPI        DashboardKPI   `json:"kpi"`
 	RecentJobs []DashboardJob `json:"recent_jobs"`
 }
+
+// MeResponse is the GET /api/v1/me payload: the caller's own identity.
+// A dedicated struct (not models.User) because User.Tier is json:"-" and
+// User exposes fields we don't want to leak here.
+type MeResponse struct {
+	ID   string `json:"id"`
+	Role string `json:"role"`
+	Tier string `json:"tier"`
+}
