@@ -46,3 +46,48 @@ func TestKeepWebsite(t *testing.T) {
 		t.Error("social should be kept under no_website")
 	}
 }
+
+func TestParseQueryFilter(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string // nil means "no filter"
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "   ", nil},
+		{"all alias is no filter", "all", nil},
+		{"all mixed with tiers is no filter", "all,none,has", nil},
+		{"no_website group expands", "no_website", []string{"none", "social", "directory", "builder", "booking"}},
+		{"has_website group expands", "has_website", []string{"has"}},
+		{"single tier", "none", []string{"none"}},
+		{"multiple tiers", "social,none", []string{"none", "social"}}, // canonical order
+		{"group + tier union dedup", "no_website,social,has", []string{"none", "social", "directory", "builder", "booking", "has"}},
+		{"duplicate tiers deduped", "none,none,social", []string{"none", "social"}},
+		{"case-insensitive group", "NO_WEBSITE", []string{"none", "social", "directory", "builder", "booking"}},
+		{"case-insensitive tier", "Has", []string{"has"}},
+		{"whitespace around tokens", " none , social ", []string{"none", "social"}},
+		{"empty tokens skipped", "none,,social,", []string{"none", "social"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ParseQueryFilter(c.in)
+			if err != nil {
+				t.Fatalf("ParseQueryFilter(%q) unexpected error: %v", c.in, err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("ParseQueryFilter(%q) = %v, want %v", c.in, got, c.want)
+			}
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Fatalf("ParseQueryFilter(%q) = %v, want %v", c.in, got, c.want)
+				}
+			}
+		})
+	}
+
+	for _, bad := range []string{"bogus", "no_website,bogus", "website", "none,nope"} {
+		if _, err := ParseQueryFilter(bad); err == nil {
+			t.Errorf("ParseQueryFilter(%q) expected error, got nil", bad)
+		}
+	}
+}
