@@ -21,6 +21,7 @@
 - **Commit after each task.** Conventional Commits; end every message with:
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
 - **Security invariant (do not weaken):** `/api/v1/me` returns ONLY the caller's own identity (no `userId` param). The real admin gate is the backend `RequireRole(admin)` already on `/api/v1/admin/*`; the frontend role gate is cosmetic.
+- **Deploy ordering (cross-repo, enforce):** backend `/api/v1/me` MUST merge + deploy to the target env BEFORE the frontend ships. Otherwise `/me` 404s, `useUserRole` fails closed to non-admin, and admins silently lose the Admin nav/page (no breach, but a broken feature). Verify `GET /api/v1/me` returns `200` in the target env before merging the frontend PR.
 
 ## File Structure
 **Backend (`brezelscraper-backend/`)**
@@ -52,7 +53,9 @@
 - Create: `web/handlers/me_test.go`
 - Modify: `web/web.go`
 
-> Design note: role + tier are written into the request context by the auth middleware (DB-authoritative) on every request, so `GetMe` reads them from context with **no DB query and no UserRepo mock**. Per the spec, we return `{id, role, tier}`; `email` is intentionally omitted (YAGNI — it's the only field needing a `GetByID`, and nothing in Phase 1 uses it).
+> Design note: role + tier are written into the request context by the auth middleware (DB-authoritative) on every request, so `GetMe` reads them from context with **no DB query and no UserRepo mock**. Per the spec, we return `{id, role, tier}`; `email` is intentionally omitted (YAGNI — it's the only field needing a `GetByID`, and nothing in Phase 1 uses it). The golang review confirmed this context-read is *better* than a fresh `GetByID` (same source of truth as the real `RequireRole` gate; no redundant query; no intra-request TOCTOU).
+>
+> Test hardening (fold into Step 2): also add a case for an **API-key caller** (set `auth.APIKeyIDKey` in the context too) asserting `/me` still returns `200` — `/me` is intentionally NOT session-only (unlike admin routes). In every case assert `w.Code` explicitly and do not discard the `json.Unmarshal` error.
 
 - [ ] **Step 1: Add the DTO**
 
@@ -203,6 +206,37 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 1b: Audit-log admin promo mutations (accountability)
+
+**Files:** Modify `web/handlers/promo.go`
+
+> Why (from security review + OWASP A01:2025): the spec assumed admin mutations are already logged, but the promo handlers — unlike the admin *job* handlers — log only error paths. This UI turns promo create/disable into one-click actions, so add a who/what/when trail, mirroring `admin.go`'s `admin_job_created` convention.
+
+- [ ] **Step 1:** In `CreatePromoCode`, after the successful `h.Deps.PromoSvc.Create(...)` and BEFORE `renderJSON(w, http.StatusCreated, code)`, add:
+```go
+	h.Deps.Logger.Warn("admin_promo_code_created",
+		slog.String("admin_id", adminID),
+		slog.String("code", code.Code),
+		slog.Float64("amount", code.Amount))
+```
+- [ ] **Step 2:** In `UpdatePromoCode`, capture the admin id (it's currently discarded): change `if _, ok := requireAdminSession(w, r); !ok {` to `adminID, ok := requireAdminSession(w, r)` then `if !ok {`. After a successful `SetStatus`, before `renderJSON(w, http.StatusNoContent, nil)`, add:
+```go
+	h.Deps.Logger.Warn("admin_promo_code_status_changed",
+		slog.String("admin_id", adminID),
+		slog.String("promo_code_id", id),
+		slog.String("status", req.Status))
+```
+- [ ] **Step 3:** Ensure `log/slog` is imported in `web/handlers/promo.go` (add if missing). Run `go build ./web/...` and `go test ./web/handlers/ -run Promo -count=1` (existing promo handler tests still pass).
+- [ ] **Step 4: Commit**
+```bash
+git add web/handlers/promo.go
+git commit -m "feat(admin): audit-log promo create/disable at Warn level
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Chunk 2: Frontend foundation — `patch` + `useUserRole`
 
 > Switch to the frontend repo. Create the branch:
@@ -214,9 +248,18 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `src/lib/api/api-client.ts`
 - Modify: `src/hooks/use-api.ts`
 
-- [ ] **Step 1: Add `patch` to `APIClient`**
+- [ ] **Step 1: Add 204 handling + `patch` to `APIClient`**
 
-In `src/lib/api/api-client.ts`, right after the `put` method (mirrors it):
+(a) **204 short-circuit (REQUIRED — prevents a runtime crash on disable).** In `src/lib/api/api-client.ts` `request()`, immediately AFTER the `if (!response.ok) { ... }` block and BEFORE the `const contentType = response.headers.get('content-type') ...` line, add:
+```ts
+        // 204 No Content: no body to parse. The promo disable endpoint returns
+        // 204 with Content-Type: application/json + an empty body, which would
+        // otherwise make the response.json() branch below throw SyntaxError.
+        if (response.status === 204) {
+          return undefined as T;
+        }
+```
+(b) Add the `patch` method right after `put` (mirrors it):
 ```ts
   async patch<T = unknown>(endpoint: string, data: unknown, getToken: GetTokenFn): Promise<T> {
     return this.request<T>(endpoint, { method: 'PATCH', body: JSON.stringify(data) }, getToken);
@@ -573,9 +616,9 @@ Replace the stub with the component. Requirements (complete code — match house
     valid_from: string; valid_to?: string | null; created_at: string;
   }
   ```
-- **List:** `const { data, mutate } = useSWR<PromoCode[]>(SWR_KEYS.adminPromoCodes, createFetcher(getToken))` (build fetcher via `useAuth().getToken` like `useCredits`), render a `<Table>` with columns: Code, Amount, Status, Redemptions (`current_redemptions`/`max_redemptions ?? "∞"`), Valid To, Action. Active rows show a "Disable" `Button` (`variant="danger" size="sm"`); disabled rows show a muted "Disabled" label.
+- **List:** `const { data, mutate } = useSWR<PromoCode[]>(SWR_KEYS.adminPromoCodes, createFetcher(getToken))` (build fetcher via `useAuth().getToken` like `useCredits`). Guard `const codes = data ?? []` before mapping (the list endpoint returns JSON `null` for an empty set, so `data` can be `null`). Render a `<Table>` with columns: Code, Amount, Status, Redemptions (`current_redemptions`/`max_redemptions ?? "∞"`), Valid To, Action. Active rows show a "Disable" `Button` (`variant="danger" size="sm"`); disabled rows show a muted "Disabled" label.
 - **Create form:** a `<form onSubmit>` with `Input`s for code (uppercased on change), amount (number), description (optional), max_redemptions (optional number), a `new_accounts_only` checkbox, valid_to (optional `datetime-local`). On submit → build payload (`amount: Number(...)`, omit empty optionals; `valid_to` → ISO string if set), `await api.post("/api/v1/admin/promo-codes", payload)`, then `await mutate()`, success toast, reset form. On error use `extractErrorMessage(err)` (copy the helper from `PromoCodeRedemption.tsx`) → inline `role="alert"` + `toast.error`.
-- **Disable handler:** `await api.patch("/api/v1/admin/promo-codes/" + id, { status: "disabled" })` (do NOT read a response body — it's `204`), then `await mutate()` + toast. Wrap in try/catch with the same error extraction.
+- **Disable handler:** `await api.patch<void>("/api/v1/admin/promo-codes/" + id, { status: "disabled" })` (returns `204`; `request()`'s 204 short-circuit from Task 2 yields `undefined` — do NOT read a body), then `await mutate()` + toast. Wrap in try/catch with the same error extraction.
 - Loading/empty states for the list; disable the create button while submitting and when code/amount empty.
 
 - [ ] **Step 4: Run — verify pass**
@@ -611,3 +654,6 @@ With the backend running (admin DB role via `promote_admin.sh`) and the frontend
 
 ## Out of scope (per spec §10) — do NOT build
 System-health metrics / `/api/v1/admin/stats` (Phase 2) · admin user management (promote/demote) · promo redemptions detail view · hard-delete of codes · audit-log viewer · server-side (Clerk-metadata/edge) role gating.
+
+## Security hardening backlog (Phase 2+, from the 2026 review)
+Not required for Phase 1 (the core design is OWASP-aligned and on the secure side of every trade-off), but tracked so they aren't lost: MFA / step-up auth for admin accounts (highest ROI given 2025's credential-theft surge) · a dedicated per-action rate limit on admin promo mutations (today they inherit only the generic session limiter) · schema-validate admin write payloads to block mass-assignment · optional `Cache-Control: no-store` on `/me` · a router-level integration test asserting a non-admin gets `403` through the full mounted `adminRouter` chain (handler-level 403 is already covered by `web/handlers/promo_test.go`). Do NOT adopt OPA/OpenFGA/ReBAC — overkill for a single `admin` role.

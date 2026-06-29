@@ -141,7 +141,7 @@ Sidebar (role-gated "Admin" link) ─┐
 | Privilege escalation via "add admin" | No such feature — admin-granting stays script-only (D4) |
 | IDOR on `/api/v1/me` | Returns only the caller's own record; no `userId` param |
 | Flash-of-admin-shell | Loading gate in `AdminClient`; no data leaks regardless (APIs 403) |
-| Accountability | Admin mutations already logged server-side (Warn level); an audit-log **viewer** is Phase 2+ |
+| Accountability | Admin **job** mutations are logged (Warn); promo create/disable logging is **added by the plan** (Task 1b) — the existing promo handlers logged only error paths. An audit-log **viewer** is Phase 2+ |
 | CSRF | API uses bearer-JWT (not ambient cookies) → no classic CSRF vector |
 
 ## 8. Data flow & error handling
