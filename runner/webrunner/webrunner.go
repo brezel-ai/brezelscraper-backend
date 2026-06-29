@@ -26,6 +26,7 @@ import (
 	pkgconfig "github.com/gosom/google-maps-scraper/pkg/config"
 	pkglogger "github.com/gosom/google-maps-scraper/pkg/logger"
 	"github.com/gosom/google-maps-scraper/pkg/metrics"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	"github.com/gosom/google-maps-scraper/postgres"
 	"github.com/gosom/google-maps-scraper/proxypool"
 	"github.com/gosom/google-maps-scraper/runner"
@@ -1098,6 +1099,7 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 		IncludeEmails:  job.Data.IncludeEmails,
 		Images:         job.Data.MaxImages > 0,
 		ImagesPerPlace: job.Data.MaxImages,
+		WebsiteFilter:  job.Data.WebsiteFilter,
 		Debug:          w.cfg.Debug,
 		ReviewsMax:     job.Data.MaxReviews,
 		GeoCoordinates: coords,
@@ -1448,8 +1450,17 @@ func (w *webrunner) scrapeJob(ctx context.Context, job *web.Job) JobOutcome {
 				// If any charge fails, ALL charges are rolled back (all-or-nothing)
 				w.logger.Debug("billing_charge_attempting", slog.String("job_id", job.ID), slog.Int("result_count", resultCount), slog.String("user_id", job.UserID))
 
+				// Apify-style scrape-time filter charge: one "filters_applied"
+				// unit per matching written place when the website filter was
+				// active (else 0). resultCount is already the count of rows that
+				// survived the scrape-time drop.
+				filtersApplied := 0
+				if webpresence.FilterApplied(job.Data.WebsiteFilter) {
+					filtersApplied = resultCount
+				}
+
 				chargeAllCtx, chargeAllCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				billingErr := w.billingSvc.ChargeAllJobEvents(chargeAllCtx, job.UserID, job.ID, resultCount)
+				billingErr := w.billingSvc.ChargeAllJobEvents(chargeAllCtx, job.UserID, job.ID, resultCount, filtersApplied)
 				chargeAllCancel() // release resources immediately
 				if billingErr != nil {
 					w.logger.Error("billing_atomic_charge_failed",

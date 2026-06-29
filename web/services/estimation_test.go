@@ -136,7 +136,7 @@ func TestEstimateJobCost(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			est, err := svc.EstimateJobCost(ctx, tc.keywords, tc.depth, tc.maxResults, tc.email, tc.maxReviews, tc.maxImages)
+			est, err := svc.EstimateJobCost(ctx, tc.keywords, tc.depth, tc.maxResults, tc.email, tc.maxReviews, tc.maxImages, "")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -216,7 +216,7 @@ func TestEstimate_CreateJobMatchesEstimateEndpoint(t *testing.T) {
 	includeEmails := false
 
 	// Estimate-endpoint shape: max_reviews=0, max_images=0 → *int(0).
-	got, err := svc.EstimateJobCost(ctx, keywords, depth, nil, includeEmails, intPtr(0), intPtr(0))
+	got, err := svc.EstimateJobCost(ctx, keywords, depth, nil, includeEmails, intPtr(0), intPtr(0), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestEstimate_CreateJobMatchesEstimateEndpoint(t *testing.T) {
 	// estimator's "nil = no limit, use averages" branches and adds 2000
 	// reviews + 1200 images to the cost. Compute it explicitly so we can
 	// assert the gap is meaningful (no false-positive on 0 vs 0.001).
-	pre, err := svc.EstimateJobCost(ctx, keywords, depth, nil, includeEmails, nil, nil)
+	pre, err := svc.EstimateJobCost(ctx, keywords, depth, nil, includeEmails, nil, nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error (pre-fix shape): %v", err)
 	}
@@ -261,6 +261,7 @@ func TestEstimate_BugRegression(t *testing.T) {
 		false,     // email
 		intPtr(0), // maxReviews (reviews off)
 		intPtr(0), // maxImages (images off)
+		"",        // websiteFilter (none)
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -284,19 +285,19 @@ func TestEstimate_NoteContent(t *testing.T) {
 	ctx := context.Background()
 
 	// Single keyword, no cap
-	est, _ := svc.EstimateJobCost(ctx, []string{"Test"}, 5, nil, false, intPtr(0), intPtr(0))
+	est, _ := svc.EstimateJobCost(ctx, []string{"Test"}, 5, nil, false, intPtr(0), intPtr(0), "")
 	if est.Description == "" {
 		t.Error("Note should not be empty for single keyword")
 	}
 
 	// With explicit cap
-	est, _ = svc.EstimateJobCost(ctx, []string{"Test"}, 5, intPtr(30), false, intPtr(0), intPtr(0))
+	est, _ = svc.EstimateJobCost(ctx, []string{"Test"}, 5, intPtr(30), false, intPtr(0), intPtr(0), "")
 	if est.Description == "" {
 		t.Error("Note should not be empty with explicit cap")
 	}
 
 	// Multiple keywords
-	est, _ = svc.EstimateJobCost(ctx, []string{"A", "B", "C"}, 5, nil, false, intPtr(0), intPtr(0))
+	est, _ = svc.EstimateJobCost(ctx, []string{"A", "B", "C"}, 5, nil, false, intPtr(0), intPtr(0), "")
 	if est.Description == "" {
 		t.Error("Note should not be empty for multiple keywords")
 	}

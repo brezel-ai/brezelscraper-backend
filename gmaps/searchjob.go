@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gosom/google-maps-scraper/exiter"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	"github.com/gosom/scrapemate"
 	"github.com/playwright-community/playwright-go"
 )
@@ -35,6 +36,14 @@ type SearchJob struct {
 
 	params      *MapSearchParams
 	ExitMonitor exiter.Exiter
+
+	// WebsiteFilter is the scrape-time web-presence pre-filter (Apify-style).
+	// "" / "all" keep every entry; "no_website"/"has_website" drop
+	// non-matching entries in Process before they are emitted as results.
+	// In fast mode the website string is present in the search payload, so the
+	// drop happens here directly (no per-place visit). See
+	// pkg/webpresence.KeepWebsite.
+	WebsiteFilter string
 
 	// UserID and UserJobID mirror the same fields on GmapJob. SearchJob does
 	// not currently spawn PlaceJobs, but the fields are kept for symmetry so
@@ -77,6 +86,15 @@ func WithSearchJobExitMonitor(exitMonitor exiter.Exiter) SearchJobOptions {
 	}
 }
 
+// WithSearchJobWebsiteFilter sets the scrape-time web-presence pre-filter on
+// the SearchJob. "" / "all" keep every entry; "no_website"/"has_website" drop
+// non-matching entries in Process. See pkg/webpresence.KeepWebsite.
+func WithSearchJobWebsiteFilter(filter string) SearchJobOptions {
+	return func(j *SearchJob) {
+		j.WebsiteFilter = filter
+	}
+}
+
 // WithSearchJobUserContext propagates the user-facing job identifiers to the
 // SearchJob. Mirrors WithUserContext on GmapJob. SearchJob does not currently
 // spawn PlaceJobs directly, but the fields are stored for symmetry and future
@@ -110,6 +128,19 @@ func (j *SearchJob) Process(_ context.Context, resp *scrapemate.Response) (any, 
 		j.params.Location.Lon,
 		j.params.Location.Radius,
 	)
+
+	// Scrape-time web-presence pre-filter (Apify-style). In fast mode the
+	// website string rides along in the search payload, so non-matching
+	// businesses are dropped here before they are emitted/written/billed.
+	if webpresence.FilterApplied(j.WebsiteFilter) {
+		kept := entries[:0]
+		for _, e := range entries {
+			if webpresence.KeepWebsite(j.WebsiteFilter, e.WebSite) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
 
 	if j.ExitMonitor != nil {
 		j.ExitMonitor.IncrSeedCompleted(1)

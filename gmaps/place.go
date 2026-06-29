@@ -27,6 +27,7 @@ import (
 
 	"github.com/gosom/google-maps-scraper/exiter"
 	"github.com/gosom/google-maps-scraper/gmaps/images"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	"github.com/gosom/google-maps-scraper/proxypool"
 )
 
@@ -90,6 +91,14 @@ type PlaceJob struct {
 	// N. After this PlaceJob completes, len(entry.Images) ≤ ImagesPerPlace
 	// always holds — the downstream billing query trusts this invariant.
 	ImagesPerPlace int
+
+	// WebsiteFilter is the scrape-time web-presence pre-filter (Apify-style),
+	// propagated from the GmapJob. "" / "all" keep every place; "no_website"
+	// drops places that have a real owned website; "has_website" drops places
+	// that don't. The drop happens in Process before the entry is written, so
+	// non-matching places are never stored or billed. See
+	// pkg/webpresence.KeepWebsite.
+	WebsiteFilter string
 
 	// UserID is the Clerk user identifier (e.g., "user_36X..."). Populated by
 	// the webrunner via WithPlaceJobUserContext, propagated from the GmapJob.
@@ -156,6 +165,16 @@ func WithPlaceJobExitMonitor(exitMonitor exiter.Exiter) PlaceJobOptions {
 func WithPlaceJobImagesPerPlace(n int) PlaceJobOptions {
 	return func(j *PlaceJob) {
 		j.ImagesPerPlace = n
+	}
+}
+
+// WithPlaceJobWebsiteFilter sets the scrape-time web-presence pre-filter on
+// the PlaceJob. "" / "all" keep every place; "no_website"/"has_website" drop
+// non-matching places in Process before they are written. See
+// pkg/webpresence.KeepWebsite.
+func WithPlaceJobWebsiteFilter(filter string) PlaceJobOptions {
+	return func(j *PlaceJob) {
+		j.WebsiteFilter = filter
 	}
 }
 
@@ -363,6 +382,21 @@ func (j *PlaceJob) Process(ctx context.Context, resp *scrapemate.Response) (any,
 	// Successful JSON extraction and parsing
 	entry = parsedEntry
 	checkPlacePayloadInvariants(ctx, j, &entry)
+
+	// Scrape-time web-presence pre-filter (Apify-style). When the job requests
+	// only no-website / only has-website businesses, drop the non-matching
+	// place here — before image processing, review parsing and email
+	// extraction — so it is never written or billed. We must NOT return a nil
+	// *Entry (the writer asserts *gmaps.Entry), so signal the skip by clearing
+	// UsageInResults and still count the place as completed so the exiter does
+	// not hang in unlimited mode. See pkg/webpresence.KeepWebsite.
+	if !webpresence.KeepWebsite(j.WebsiteFilter, entry.WebSite) {
+		j.UsageInResults = false
+		if j.ExitMonitor != nil {
+			j.ExitMonitor.IncrPlacesCompleted(1)
+		}
+		return nil, nil, nil
+	}
 
 	// Per-place image cap enforcement (post-EntryFromJSON).
 	//

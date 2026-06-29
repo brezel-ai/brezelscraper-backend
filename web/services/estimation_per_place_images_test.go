@@ -23,7 +23,7 @@ func TestEstimateJobCost_ImagesPerPlace_ScalesByPlaces(t *testing.T) {
 	// 1 keyword, depth 5 → 40 places (matches the bug-scenario row already
 	// covered by TestEstimateJobCost). Per-place cap of 10 images.
 	maxImages := 10
-	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), &maxImages)
+	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), &maxImages, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestEstimateJobCost_ImagesPerPlace_HighCapNoArtificialCeiling(t *testing.T)
 	// total semantics, estImages got clipped to min(40*30, 500) = 500.
 	// Under per-place semantics, it must be 40 × 500 = 20 000.
 	maxImages := 500
-	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), &maxImages)
+	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), &maxImages, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestEstimateJobCost_ImagesNil_NoLimit_UsesAverage(t *testing.T) {
 	// "No cap" (nil) preserves the per-place average fallback. This must
 	// keep working — the estimate endpoint sends nil when the user toggles
 	// "no limit" in the UI.
-	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), nil)
+	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEstimateJobCost_ImagesZero_NoCharge(t *testing.T) {
 	ctx := context.Background()
 
 	// max_images=0 (toggle off) → no image cost contribution.
-	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), intPtr(0))
+	est, err := svc.EstimateJobCost(ctx, []string{"Cafe"}, 5, nil, false, intPtr(0), intPtr(0), "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/gosom/google-maps-scraper/models"
+	"github.com/gosom/google-maps-scraper/pkg/webpresence"
 	"github.com/gosom/google-maps-scraper/web/auth"
 	webservices "github.com/gosom/google-maps-scraper/web/services"
 	webutils "github.com/gosom/google-maps-scraper/web/utils"
@@ -70,6 +71,7 @@ type estimateRequest struct {
 	MaxImages     *int     `json:"max_images,omitempty" validate:"omitempty,min=0,max=500"`
 	MaxReviews    *int     `json:"max_reviews,omitempty" validate:"omitempty,min=0,max=500"`
 	MaxResults    *int     `json:"max_results,omitempty" validate:"omitempty,min=1,max=500"`
+	WebsiteFilter string   `json:"website_filter,omitempty" validate:"omitempty,oneof=all no_website has_website"`
 }
 
 // estimateBalance is the nested balance sub-object in the estimate response.
@@ -204,6 +206,7 @@ func (h *APIHandlers) Scrape(w http.ResponseWriter, r *http.Request) {
 			newJob.Data.IncludeEmails,
 			rvPtr,
 			imPtr,
+			newJob.Data.WebsiteFilter,
 		)
 		if err != nil {
 			// Pricing-layer outage (DB unreachable, pricing_rules empty)
@@ -566,6 +569,13 @@ func (h *APIHandlers) GetJobResults(w http.ResponseWriter, r *http.Request) {
 		renderJSON(w, http.StatusBadRequest, models.APIError{Code: http.StatusBadRequest, Message: err.Error()})
 		return
 	}
+
+	tiers, err := webpresence.ParseTiers(r.URL.Query().Get("web_presence"))
+	if err != nil {
+		renderJSON(w, http.StatusBadRequest, models.APIError{Code: http.StatusBadRequest, Message: err.Error()})
+		return
+	}
+
 	userID, err := auth.GetUserID(r.Context())
 	if err != nil {
 		renderJSON(w, http.StatusUnauthorized, models.APIError{Code: http.StatusUnauthorized, Message: "User not authenticated"})
@@ -586,13 +596,20 @@ func (h *APIHandlers) GetJobResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, total, err := h.Deps.ResultsSvc.GetEnhancedJobResultsPaginated(r.Context(), jobID, userID, limit, offset)
+	results, total, counts, err := h.Deps.ResultsSvc.GetEnhancedJobResultsPaginated(r.Context(), jobID, userID, tiers, limit, offset)
 	if err != nil {
 		internalError(w, h.Deps.Logger, err, "failed to retrieve results",
 			slog.String("user_id", userID), slog.String("job_id", jobID), slog.String("path", r.URL.Path), slog.String("method", r.Method))
 		return
 	}
-	resp := models.PaginatedResultsResponse{Results: results, Total: total, Page: page, Limit: limit, HasMore: page*limit < total}
+	resp := models.PaginatedResultsResponse{
+		Results:           results,
+		Total:             total,
+		Page:              page,
+		Limit:             limit,
+		HasMore:           page*limit < total,
+		WebPresenceCounts: counts,
+	}
 	renderJSON(w, http.StatusOK, resp)
 }
 
@@ -788,6 +805,7 @@ func (h *APIHandlers) EstimateJobCost(w http.ResponseWriter, r *http.Request) {
 		req.IncludeEmails,
 		req.MaxReviews,
 		req.MaxImages,
+		req.WebsiteFilter,
 	)
 	if err != nil {
 		if errors.Is(err, webservices.ErrPricingUnavailable) {

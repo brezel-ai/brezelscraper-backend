@@ -112,5 +112,5 @@ type JobService interface {
 type ResultsService interface {
 	GetJobResults(ctx context.Context, jobID string) ([]models.Result, error)
 	GetUserResults(ctx context.Context, userID string, limit, offset int) ([]models.Result, error)
-	GetEnhancedJobResultsPaginated(ctx context.Context, jobID, userID string, limit, offset int) ([]models.EnhancedResult, int, error)
+	GetEnhancedJobResultsPaginated(ctx context.Context, jobID, userID string, tiers []string, limit, offset int) ([]models.EnhancedResult, int, map[string]int, error)
 }
