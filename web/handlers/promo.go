@@ -104,6 +104,14 @@ func (h *AdminHandlers) CreatePromoCode(w http.ResponseWriter, r *http.Request) 
 		internalError(w, h.Deps.Logger, err, "Failed to create promo code", slog.String("admin_id", adminID))
 		return
 	}
+	// Admin actions are logged at Warn level (not Info) so they stand out in
+	// log aggregation dashboards and can be filtered for audit review.
+	if h.Deps.Logger != nil {
+		h.Deps.Logger.Warn("admin_promo_code_created",
+			slog.String("admin_id", adminID),
+			slog.String("code", code.Code),
+			slog.Float64("amount", code.Amount))
+	}
 	renderJSON(w, http.StatusCreated, code)
 }
 
@@ -130,7 +138,8 @@ type setPromoStatusRequest struct {
 
 // UpdatePromoCode handles PATCH /api/v1/admin/promo-codes/{id} (enable/disable).
 func (h *AdminHandlers) UpdatePromoCode(w http.ResponseWriter, r *http.Request) {
-	if _, ok := requireAdminSession(w, r); !ok {
+	adminID, ok := requireAdminSession(w, r)
+	if !ok {
 		return
 	}
 	if h.Deps.PromoSvc == nil {
@@ -154,6 +163,12 @@ func (h *AdminHandlers) UpdatePromoCode(w http.ResponseWriter, r *http.Request) 
 		}
 		internalError(w, h.Deps.Logger, err, "Failed to update promo code")
 		return
+	}
+	if h.Deps.Logger != nil {
+		h.Deps.Logger.Warn("admin_promo_code_status_changed",
+			slog.String("admin_id", adminID),
+			slog.String("promo_code_id", id),
+			slog.String("status", req.Status))
 	}
 	renderJSON(w, http.StatusNoContent, nil)
 }
