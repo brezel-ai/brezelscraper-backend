@@ -170,5 +170,9 @@ func (h *AdminHandlers) UpdatePromoCode(w http.ResponseWriter, r *http.Request) 
 			slog.String("promo_code_id", id),
 			slog.String("status", req.Status))
 	}
-	renderJSON(w, http.StatusNoContent, nil)
+	// Bare 204 (not renderJSON): a 204 forbids a response body, so encoding
+	// JSON into it returns ErrBodyNotAllowed and renderJSON would log a
+	// spurious ERROR on every successful disable. WriteHeader is the correct
+	// no-body success signal and matches the other 204 endpoints.
+	w.WriteHeader(http.StatusNoContent)
 }
